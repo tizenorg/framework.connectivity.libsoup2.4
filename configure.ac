@@ -108,7 +108,36 @@ dnl *** Misc checks ***
 dnl *******************
 AC_CHECK_FUNCS(gmtime_r)
 AC_CHECK_FUNCS(mmap)
+
+dnl *********************************
+dnl *** Networking library checks ***
+dnl *********************************
+
 AC_CHECK_FUNC(socket, , AC_CHECK_LIB(socket, socket))
+
+dnl *************************
+dnl *** SQL Lite support independently of gnome for Tizen  ***
+dnl *************************
+
+AC_ARG_ENABLE(sqllite,
+         AS_HELP_STRING([--enable-sqllite], [Enable SQL lite support ]),        ,
+         enable_sqllite=no)
+
+if test "$enable_sqllite" != "no"; then
+   PKG_CHECK_MODULES(SQLITE, sqlite3, :, [AC_MSG_ERROR(dnl
+[Could not find sqlite3 devel files:
+
+$SQLITE_PKG_ERRORS
+
+Pass "--without-sqlite" to configure if you want to build libsoup
+without sql lite support.])])
+
+fi
+
+AC_SUBST(SQLITE_CFLAGS)
+AC_SUBST(SQLITE_LIBS)
+
+AM_CONDITIONAL(SQLLITE_SUPPORT, [test $enable_sqllite = yes])
 
 dnl *********************
 dnl *** GNOME support ***

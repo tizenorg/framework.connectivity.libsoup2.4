@@ -63,6 +63,11 @@ soup_headers =			\
 	soup-value-utils.h	\
 	soup-xmlrpc.h
 
+if SQLLITE_SUPPORT
+soup_headers +=		\
+	soup-cookie-jar-sqlite.h
+endif
+
 libsoupinclude_HEADERS =	\
 	$(soup_headers)		\
 	soup-enum-types.h
@@ -77,6 +82,11 @@ libsoup_2_4_la_LIBADD =			\
 	$(XML_LIBS)			\
 	-lz				\
 	$(LIBWS2_32)
+
+if SQLLITE_SUPPORT
+libsoup_2_4_la_LIBADD +=		\
+	$(SQLITE_LIBS)
+endif
 
 libsoup_2_4_la_SOURCES =		\
 	soup-address.c			\
@@ -152,6 +162,11 @@ libsoup_2_4_la_SOURCES =		\
 	soup-uri.c			\
 	soup-value-utils.c		\
 	soup-xmlrpc.c
+
+if SQLLITE_SUPPORT
+libsoup_2_4_la_SOURCES +=		\
+	soup-cookie-jar-sqlite.c
+endif
 
 if BUILD_LIBSOUP_GNOME
 
