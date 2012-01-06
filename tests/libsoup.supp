@@ -1,0 +1,246 @@
+# valgrind suppressions file
+
+{
+   ld.so/map
+   Memcheck:Cond
+   fun:index
+   fun:expand_dynamic_string_token
+   fun:_dl_map_object
+}
+{
+   ld.so/relocate
+   Memcheck:Cond
+   fun:_dl_relocate_object
+   fun:dl_main
+   fun:_dl_sysdep_start
+   fun:_dl_start
+}
+
+{
+   glib/g_type_init
+   Memcheck:Leak
+   ...
+   fun:g_type_init
+}
+{
+   glib/g_type_init_with_debug_flags
+   Memcheck:Leak
+   ...
+   fun:g_type_init_with_debug_flags
+}
+{
+   glib/g_thread_init
+   Memcheck:Leak
+   ...
+   fun:g_thread_init
+}
+{
+   glib/g_thread_init_glib
+   Memcheck:Leak
+   ...
+   fun:g_thread_init_glib
+}
+{
+   glib/g_type_register_static
+   Memcheck:Leak
+   ...
+   fun:g_type_register_static
+}
+{
+   glib/g_boxed_type_register_static
+   Memcheck:Leak
+   ...
+   fun:g_boxed_type_register_static
+}
+{
+   glib/g_type_add_interface_static
+   Memcheck:Leak
+   ...
+   fun:g_type_add_interface_static
+}
+{
+   glib/g_type_interface_add_prerequisite
+   Memcheck:Leak
+   ...
+   fun:g_type_interface_add_prerequisite
+}
+{
+   glib/g_type_class_ref
+   Memcheck:Leak
+   ...
+   fun:g_type_class_ref
+}
+{
+   glib/g_set_prgname
+   Memcheck:Leak
+   ...
+   fun:g_set_prgname
+}
+{
+   glib/g_intern_string
+   Memcheck:Leak
+   ...
+   fun:g_intern_string
+}
+{
+   glib/g_intern_static_string
+   Memcheck:Leak
+   ...
+   fun:g_intern_static_string
+}
+{
+   glib/g_quark_from_string
+   Memcheck:Leak
+   ...
+   fun:g_quark_from_string
+}
+{
+   glib/g_quark_from_static_string
+   Memcheck:Leak
+   ...
+   fun:g_quark_from_static_string
+}
+{
+   glib/get_dispatch
+   Memcheck:Leak
+   ...
+   fun:get_dispatch
+}
+{
+   glib/g_signal_handlers_destroy
+   Memcheck:Leak
+   ...
+   fun:g_signal_handlers_destroy
+}
+{
+   glib/g_data_initialize
+   Memcheck:Leak
+   ...
+   fun:g_data_initialize
+}
+{
+   glib/g_static_private_set
+   Memcheck:Leak
+   ...
+   fun:g_static_private_set
+}
+{
+   glib/g_child_watch_source_init_multi_threaded
+   Memcheck:Leak
+   ...
+   fun:g_child_watch_source_init_multi_threaded
+}
+{
+   glib/xdg_mime_init
+   Memcheck:Leak
+   ...
+   fun:xdg_mime_init
+}
+{
+   glib/GResolver
+   Memcheck:Leak
+   ...
+   fun:g_resolver_get_default
+}
+{
+   glib/g_main_context_push_thread_default
+   Memcheck:Leak
+   ...
+   fun:g_main_context_push_thread_default
+}
+{
+   glib/g_socket_connection_factory
+   Memcheck:Leak
+   ...
+   fun:g_socket_connection_factory_register_type
+}
+{
+   glib/g_get_language_names
+   Memcheck:Leak
+   ...
+   fun:g_get_language_names
+}
+{
+   glib/giomodules
+   Memcheck:Leak
+   ...
+   fun:_g_io_modules_ensure_loaded
+}
+{
+   glib/tlsinit
+   Memcheck:Leak
+   ...
+   fun:get_default_tls_backend
+}
+{
+   glib/tlscrypto
+   Memcheck:Leak
+   ...
+   fun:gcry_pthread_mutex_init
+}
+{
+   glib/tlscache
+   Memcheck:Leak
+   ...
+   fun:g_tls_backend_gnutls_cache_session_data
+}
+{
+   glib/tlspriority
+   Memcheck:Leak
+   ...
+   fun:g_tls_connection_gnutls_init_priorities
+}
+{
+   glib/gfileinfo
+   Memcheck:Leak
+   ...
+   fun:ensure_attribute_hash
+   fun:lookup_attribute
+}
+
+# probably using uninitialized memory as padding or something
+{
+   gnutls/handshake
+   Memcheck:Cond
+   ...
+   fun:gnutls_handshake
+}
+
+{
+   libxml2/xmlInitParser
+   Memcheck:Leak
+   ...
+   fun:xmlInitParser
+}
+{
+   libxml2/xmlInitializeDict
+   Memcheck:Leak
+   ...
+   fun:xmlInitializeDict
+}
+{
+   libxml2/xmlInitCharEncodingHandlers
+   Memcheck:Leak
+   ...
+   fun:xmlInitCharEncodingHandlers
+}
+{
+   libxml2/xmlNewCharEncodingHandler
+   Memcheck:Leak
+   ...
+   fun:xmlNewCharEncodingHandler
+}
+
+{
+   libsoup/interned_uri_schemes
+   Memcheck:Leak
+   ...
+   fun:g_ascii_strdown
+   fun:soup_uri_parse_scheme
+}
+{
+   libsoup/interned_headers
+   Memcheck:Leak
+   ...
+   fun:intern_header_name
+}
