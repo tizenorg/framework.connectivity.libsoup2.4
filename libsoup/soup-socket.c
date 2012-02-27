@@ -955,7 +955,7 @@ soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
 				       "server-identity", identity,
 				       "use-system-certdb", FALSE,
 				       "require-close-notify", FALSE,
-				       "use-ssl3", TRUE,
+				       "use-ssl3", priv->ssl_fallback,
 				       NULL);
 		g_object_unref (identity);
 
