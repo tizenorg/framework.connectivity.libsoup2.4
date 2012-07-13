@@ -42,8 +42,8 @@ an HTTP library implementation in C (development files).
 
 %build
 touch gtk-doc.make
-./autogen.sh --prefix=/usr --without-gnome --disable-tls-check --disable-static
-#./autogen.sh --prefix=/usr --without-gnome --enable-sqllite=yes --disable-tls-check --disable-static
+#./autogen.sh --prefix=/usr --without-gnome --disable-tls-check --disable-static
+./autogen.sh --prefix=/usr --without-gnome --enable-sqllite=yes --disable-tls-check --disable-static
 
 make %{?jobs:-j%jobs}
 
