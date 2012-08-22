@@ -144,7 +144,7 @@ soup_cookie_jar_class_init (SoupCookieJarClass *jar_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupCookieJarClass, changed),
 			      NULL, NULL,
-			      soup_marshal_NONE__BOXED_BOXED,
+			      _soup_marshal_NONE__BOXED_BOXED,
 			      G_TYPE_NONE, 2, 
 			      SOUP_TYPE_COOKIE | G_SIGNAL_TYPE_STATIC_SCOPE,
 			      SOUP_TYPE_COOKIE | G_SIGNAL_TYPE_STATIC_SCOPE);
@@ -252,6 +252,14 @@ soup_cookie_jar_new (void)
 	return g_object_new (SOUP_TYPE_COOKIE_JAR, NULL);
 }
 
+/**
+ * soup_cookie_jar_save:
+ * @jar: a #SoupCookieJar
+ *
+ * This function exists for backward compatibility, but does not do
+ * anything any more; cookie jars are saved automatically when they
+ * are changed.
+ */
 void
 soup_cookie_jar_save (SoupCookieJar *jar)
 {
@@ -716,7 +724,9 @@ soup_cookie_jar_delete_cookie (SoupCookieJar *jar,
 /**
  * soup_cookie_jar_get_accept_policy:
  * @jar: a #SoupCookieJar
- * 
+ *
+ * Gets @jar's #SoupCookieJarAcceptPolicy
+ *
  * Returns: the #SoupCookieJarAcceptPolicy set in the @jar
  *
  * Since: 2.30

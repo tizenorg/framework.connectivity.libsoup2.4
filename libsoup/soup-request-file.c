@@ -73,13 +73,43 @@ soup_request_file_check_uri (SoupRequest  *request,
 		return FALSE;
 
 	/* but it must be "file:///..." or "file://localhost/..." */
-	if (uri->scheme == SOUP_URI_SCHEME_FILE &&
-	    *uri->host &&
+	if (*uri->host &&
 	    g_ascii_strcasecmp (uri->host, "localhost") != 0)
 		return FALSE;
-
 	return TRUE;
 }
+
+#ifdef G_OS_WIN32
+static void
+windowsify_file_uri_path (char *path)
+{
+	char *p, *slash;
+
+	/* Copied from g_filename_from_uri(), which we can't use
+	 * directly because it rejects invalid URIs that we need to
+	 * keep.
+	 */
+
+	/* Turn slashes into backslashes, because that's the canonical spelling */
+	p = path;
+	while ((slash = strchr (p, '/')) != NULL) {
+		*slash = '\\';
+		p = slash + 1;
+	}
+
+	/* Windows URIs with a drive letter can be like
+	 * "file://host/c:/foo" or "file://host/c|/foo" (some Netscape
+	 * versions). In those cases, start the filename from the
+	 * drive letter.
+	 */
+	if (g_ascii_isalpha (path[1])) {
+		if (path[2] == '|')
+			path[2] = ':';
+		if (path[2] == ':')
+			memmove (path, path + 1, strlen (path));
+	}
+}
+#endif
 
 static gboolean
 soup_request_file_ensure_file (SoupRequestFile  *file,
@@ -87,25 +117,21 @@ soup_request_file_ensure_file (SoupRequestFile  *file,
 			       GError          **error)
 {
 	SoupURI *uri;
+	char *decoded_path;
 
 	if (file->priv->gfile)
 		return TRUE;
 
 	uri = soup_request_get_uri (SOUP_REQUEST (file));
-	if (uri->scheme == SOUP_URI_SCHEME_FILE) {
-		gchar *decoded_uri = soup_uri_decode (uri->path);
+	decoded_path = soup_uri_decode (uri->path);
 
-		if (decoded_uri) {
-			file->priv->gfile = g_file_new_for_path (decoded_uri);
-			g_free (decoded_uri);
-		}
+#ifdef G_OS_WIN32
+	windowsify_file_uri_path (decoded_path);
+#endif
 
-		return TRUE;
-	}
-
-	g_set_error (error, SOUP_REQUESTER_ERROR, SOUP_REQUESTER_ERROR_UNSUPPORTED_URI_SCHEME,
-		     _("Unsupported URI scheme '%s'"), uri->scheme);
-	return FALSE;
+	file->priv->gfile = g_file_new_for_path (decoded_path);
+	g_free (decoded_path);
+	return TRUE;
 }
 
 static GInputStream *
@@ -171,12 +197,10 @@ soup_request_file_send_async_thread (GSimpleAsyncResult *res,
 
 	stream = soup_request_file_send (request, cancellable, &error);
 
-	if (stream == NULL) {
-		g_simple_async_result_set_from_error (res, error);
-		g_error_free (error);
-	} else {
+	if (stream == NULL)
+		g_simple_async_result_take_error (res, error);
+	else
 		g_simple_async_result_set_op_res_gpointer (res, stream, g_object_unref);
-	}
 }
 
 static void
@@ -250,6 +274,16 @@ soup_request_file_class_init (SoupRequestFileClass *request_file_class)
 	request_class->get_content_type = soup_request_file_get_content_type;
 }
 
+/**
+ * soup_request_file_get_file:
+ * @file: a #SoupRequestFile
+ *
+ * Gets a #GFile corresponding to @file's URI
+ *
+ * Return value: (transfer full): a #GFile corresponding to @file
+ *
+ * Since: 2.34
+ */
 GFile *
 soup_request_file_get_file (SoupRequestFile *file)
 {

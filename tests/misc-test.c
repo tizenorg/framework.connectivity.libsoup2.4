@@ -1,99 +1,22 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*- */
 /*
- * Copyright (C) 2007 Red Hat, Inc.
+ * Copyright 2007-2012 Red Hat, Inc.
  */
 
-#include <ctype.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
-#include <glib.h>
 #include <libsoup/soup.h>
 
 #include "test-utils.h"
 
-SoupServer *server;
-SoupURI *base_uri;
-GMutex *server_mutex;
+SoupServer *server, *ssl_server;
+SoupURI *base_uri, *ssl_base_uri;
 
 static gboolean
 auth_callback (SoupAuthDomain *auth_domain, SoupMessage *msg,
 	       const char *username, const char *password, gpointer data)
 {
 	return !strcmp (username, "user") && !strcmp (password, "password");
-}
-
-static void
-forget_close (SoupMessage *msg, gpointer user_data)
-{
-	soup_message_headers_remove (msg->response_headers, "Connection");
-}
-
-static void
-close_socket (SoupMessage *msg, gpointer user_data)
-{
-	SoupSocket *sock = user_data;
-
-	soup_socket_disconnect (sock);
-}
-
-static void
-timeout_socket (SoupSocket *sock, gpointer user_data)
-{
-	soup_socket_disconnect (sock);
-}
-
-static void
-timeout_request_started (SoupServer *server, SoupMessage *msg,
-			 SoupClientContext *client, gpointer user_data)
-{
-	SoupSocket *sock;
-	GMainContext *context = soup_server_get_async_context (server);
-	guint readable;
-
-	sock = soup_client_context_get_socket (client);
-	readable = g_signal_connect (sock, "readable",
-				    G_CALLBACK (timeout_socket), NULL);
-	while (soup_socket_is_connected (sock))
-		g_main_context_iteration (context, TRUE);
-	g_signal_handler_disconnect (sock, readable);
-	g_signal_handlers_disconnect_by_func (server, timeout_request_started, NULL);
-}
-
-static void
-setup_timeout_persistent (SoupServer *server, SoupSocket *sock)
-{
-	char buf[1];
-	gsize nread;
-
-	/* In order for the test to work correctly, we have to
-	 * close the connection *after* the client side writes
-	 * the request. To ensure that this happens reliably,
-	 * regardless of thread scheduling, we:
-	 *
-	 *   1. Try to read off the socket now, knowing it will
-	 *      fail (since the client is waiting for us to
-	 *      return a response). This will cause it to
-	 *      emit "readable" later.
-	 *   2. Connect to the server's request-started signal.
-	 *   3. Run an inner main loop from that signal handler
-	 *      until the socket emits "readable". (If we don't
-	 *      do this then it's possible the client's next
-	 *      request would be ready before we returned to
-	 *      the main loop, and so the signal would never be
-	 *      emitted.)
-	 *   4. Close the socket.
-	 */
-
-	soup_socket_read (sock, buf, 1, &nread, NULL, NULL);
-	g_signal_connect (server, "request-started",
-			  G_CALLBACK (timeout_request_started), NULL);
 }
 
 static gboolean
@@ -111,13 +34,7 @@ server_callback (SoupServer *server, SoupMessage *msg,
 		 SoupClientContext *context, gpointer data)
 {
 	SoupURI *uri = soup_message_get_uri (msg);
-
-	/* The way this gets used in the tests, we don't actually
-	 * need to hold it through the whole function, so it's simpler
-	 * to just release it right away.
-	 */
-	g_mutex_lock (server_mutex);
-	g_mutex_unlock (server_mutex);
+	const char *server_protocol = data;
 
 	soup_message_headers_append (msg->response_headers,
 				     "X-Handled-By", "server_callback");
@@ -129,62 +46,42 @@ server_callback (SoupServer *server, SoupMessage *msg,
 		return;
 	}
 
-	if (msg->method != SOUP_METHOD_GET) {
+	if (msg->method != SOUP_METHOD_GET && msg->method != SOUP_METHOD_POST) {
 		soup_message_set_status (msg, SOUP_STATUS_NOT_IMPLEMENTED);
 		return;
 	}
 
 	if (!strcmp (path, "/redirect")) {
-		soup_message_set_status (msg, SOUP_STATUS_FOUND);
-		soup_message_headers_append (msg->response_headers,
-					     /* Kids: don't try this at home!
-					      * RFC2616 says to use an
-					      * absolute URI!
-					      */
-					     "Location", "/");
+		soup_message_set_redirect (msg, SOUP_STATUS_FOUND, "/");
 		return;
 	}
 
-	if (g_str_has_prefix (path, "/content-length/")) {
-		gboolean too_long = strcmp (path, "/content-length/long") == 0;
-		gboolean no_close = strcmp (path, "/content-length/noclose") == 0;
+	if (!strcmp (path, "/alias-redirect")) {
+		SoupURI *redirect_uri;
+		char *redirect_string;
+		const char *redirect_protocol;
 
+		redirect_protocol = soup_message_headers_get_one (msg->request_headers, "X-Redirect-Protocol");
+
+		redirect_uri = soup_uri_copy (uri);
+		soup_uri_set_scheme (redirect_uri, "foo");
+		if (!g_strcmp0 (redirect_protocol, "https"))
+			soup_uri_set_port (redirect_uri, ssl_base_uri->port);
+		else
+			soup_uri_set_port (redirect_uri, base_uri->port);
+		soup_uri_set_path (redirect_uri, "/alias-redirected");
+		redirect_string = soup_uri_to_string (redirect_uri, FALSE);
+
+		soup_message_set_redirect (msg, SOUP_STATUS_FOUND, redirect_string);
+		g_free (redirect_string);
+		soup_uri_free (redirect_uri);
+		return;
+	} else if (!strcmp (path, "/alias-redirected")) {
 		soup_message_set_status (msg, SOUP_STATUS_OK);
-		soup_message_set_response (msg, "text/plain",
-					   SOUP_MEMORY_STATIC, "foobar", 6);
-		if (too_long)
-			soup_message_headers_set_content_length (msg->response_headers, 9);
 		soup_message_headers_append (msg->response_headers,
-					     "Connection", "close");
-
-		if (too_long) {
-			SoupSocket *sock;
-
-			/* soup-message-io will wait for us to add
-			 * another chunk after the first, to fill out
-			 * the declared Content-Length. Instead, we
-			 * forcibly close the socket at that point.
-			 */
-			sock = soup_client_context_get_socket (context);
-			g_signal_connect (msg, "wrote-chunk",
-					  G_CALLBACK (close_socket), sock);
-		} else if (no_close) {
-			/* Remove the 'Connection: close' after writing
-			 * the headers, so that when we check it after
-			 * writing the body, we'll think we aren't
-			 * supposed to close it.
-			 */
-			g_signal_connect (msg, "wrote-headers",
-					  G_CALLBACK (forget_close), NULL);
-		}
+					     "X-Redirected-Protocol",
+					     server_protocol);
 		return;
-	}
-
-	if (!strcmp (path, "/timeout-persistent")) {
-		SoupSocket *sock;
-
-		sock = soup_client_context_get_socket (context);
-		setup_timeout_persistent (server, sock);
 	}
 
 	if (!strcmp (path, "/slow")) {
@@ -562,6 +459,12 @@ ea_connection_created (SoupSession *session, GObject *conn, gpointer user_data)
 }
 
 static void
+ea_request_started (SoupSession *session, SoupMessage *msg, SoupSocket *socket, gpointer user_data)
+{
+	soup_session_cancel_message (session, msg, SOUP_STATUS_CANCELLED);
+}
+
+static void
 do_early_abort_test (void)
 {
 	SoupSession *session;
@@ -604,63 +507,24 @@ do_early_abort_test (void)
 		g_main_context_iteration (context, FALSE);
 
 	soup_test_session_abort_unref (session);
-}
-
-static void
-do_content_length_framing_test (void)
-{
-	SoupSession *session;
-	SoupMessage *msg;
-	SoupURI *request_uri;
-	goffset declared_length;
-
-	debug_printf (1, "\nInvalid Content-Length framing tests\n");
 
 	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+	msg = soup_message_new_from_uri ("GET", base_uri);
 
-	debug_printf (1, "  Content-Length larger than message body length\n");
-	request_uri = soup_uri_new_with_base (base_uri, "/content-length/long");
-	msg = soup_message_new_from_uri ("GET", request_uri);
+	g_signal_connect (session, "request-started",
+			  G_CALLBACK (ea_request_started), NULL);
 	soup_session_send_message (session, msg);
-	if (msg->status_code != SOUP_STATUS_OK) {
+	debug_printf (2, "  Message 3 completed\n");
+
+	if (msg->status_code != SOUP_STATUS_CANCELLED) {
 		debug_printf (1, "    Unexpected response: %d %s\n",
 			      msg->status_code, msg->reason_phrase);
 		errors++;
-	} else {
-		declared_length = soup_message_headers_get_content_length (msg->response_headers);
-		debug_printf (2, "    Content-Length: %lu, body: %s\n",
-			      (gulong)declared_length, msg->response_body->data);
-		if (msg->response_body->length >= declared_length) {
-			debug_printf (1, "    Body length %lu >= declared length %lu\n",
-				      (gulong)msg->response_body->length,
-				      (gulong)declared_length);
-			errors++;
-		}
 	}
-	soup_uri_free (request_uri);
 	g_object_unref (msg);
 
-	debug_printf (1, "  Server claims 'Connection: close' but doesn't\n");
-	request_uri = soup_uri_new_with_base (base_uri, "/content-length/noclose");
-	msg = soup_message_new_from_uri ("GET", request_uri);
-	soup_session_send_message (session, msg);
-	if (msg->status_code != SOUP_STATUS_OK) {
-		debug_printf (1, "    Unexpected response: %d %s\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
-	} else {
-		declared_length = soup_message_headers_get_content_length (msg->response_headers);
-		debug_printf (2, "    Content-Length: %lu, body: %s\n",
-			      (gulong)declared_length, msg->response_body->data);
-		if (msg->response_body->length != declared_length) {
-			debug_printf (1, "    Body length %lu != declared length %lu\n",
-				      (gulong)msg->response_body->length,
-				      (gulong)declared_length);
-			errors++;
-		}
-	}
-	soup_uri_free (request_uri);
-	g_object_unref (msg);
+	while (g_main_context_pending (context))
+		g_main_context_iteration (context, FALSE);
 
 	soup_test_session_abort_unref (session);
 }
@@ -718,221 +582,6 @@ do_accept_language_test (void)
 		g_unsetenv ("LANGUAGE");
 }
 
-static void
-timeout_test_request_started (SoupSession *session, SoupMessage *msg,
-			      SoupSocket *socket, gpointer user_data)
-{
-	SoupSocket **sockets = user_data;
-	int i;
-
-	debug_printf (2, "      msg %p => socket %p\n", msg, socket);
-	for (i = 0; i < 4; i++) {
-		if (!sockets[i]) {
-			/* We ref the socket to make sure that even if
-			 * it gets disconnected, it doesn't get freed,
-			 * since our checks would get messed up if the
-			 * slice allocator reused the same address for
-			 * two consecutive sockets.
-			 */
-			sockets[i] = g_object_ref (socket);
-			return;
-		}
-	}
-
-	debug_printf (1, "      socket queue overflowed!\n");
-	errors++;
-	soup_session_cancel_message (session, msg, SOUP_STATUS_CANCELLED);
-}
-
-static void
-do_timeout_test_for_session (SoupSession *session)
-{
-	SoupMessage *msg;
-	SoupSocket *sockets[4] = { NULL, NULL, NULL, NULL };
-	SoupURI *timeout_uri;
-	int i;
-
-	g_signal_connect (session, "request-started",
-			  G_CALLBACK (timeout_test_request_started),
-			  &sockets);
-
-	debug_printf (1, "    First message\n");
-	timeout_uri = soup_uri_new_with_base (base_uri, "/timeout-persistent");
-	msg = soup_message_new_from_uri ("GET", timeout_uri);
-	soup_uri_free (timeout_uri);
-	soup_session_send_message (session, msg);
-	if (msg->status_code != SOUP_STATUS_OK) {
-		debug_printf (1, "      Unexpected response: %d %s\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
-	}
-	if (sockets[1]) {
-		debug_printf (1, "      Message was retried??\n");
-		errors++;
-		sockets[1] = sockets[2] = sockets[3] = NULL;
-	}
-	g_object_unref (msg);
-
-	debug_printf (1, "    Second message\n");
-	msg = soup_message_new_from_uri ("GET", base_uri);
-	soup_session_send_message (session, msg);
-	if (msg->status_code != SOUP_STATUS_OK) {
-		debug_printf (1, "      Unexpected response: %d %s\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
-	}
-	if (sockets[1] != sockets[0]) {
-		debug_printf (1, "      Message was not retried on existing connection\n");
-		errors++;
-	} else if (!sockets[2]) {
-		debug_printf (1, "      Message was not retried after disconnect\n");
-		errors++;
-	} else if (sockets[2] == sockets[1]) {
-		debug_printf (1, "      Message was retried on closed connection??\n");
-		errors++;
-	} else if (sockets[3]) {
-		debug_printf (1, "      Message was retried again??\n");
-		errors++;
-	}
-	g_object_unref (msg);
-
-	for (i = 0; sockets[i]; i++)
-		g_object_unref (sockets[i]);
-}
-
-static void
-do_persistent_connection_timeout_test (void)
-{
-	SoupSession *session;
-
-	debug_printf (1, "\nUnexpected timing out of persistent connections\n");
-
-	debug_printf (1, "  Async session\n");
-	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
-	do_timeout_test_for_session (session);
-	soup_test_session_abort_unref (session);
-
-	debug_printf (1, "  Sync session\n");
-	session = soup_test_session_new (SOUP_TYPE_SESSION_SYNC, NULL);
-	do_timeout_test_for_session (session);
-	soup_test_session_abort_unref (session);
-}
-
-static GMainLoop *max_conns_loop;
-static int msgs_done;
-#define MAX_CONNS 2
-#define TEST_CONNS (MAX_CONNS * 2)
-
-static gboolean
-idle_start_server (gpointer data)
-{
-	g_mutex_unlock (server_mutex);
-	return FALSE;
-}
-
-static gboolean
-quit_loop (gpointer data)
-{
-	g_main_loop_quit (max_conns_loop);
-	return FALSE;
-}
-
-static void
-max_conns_request_started (SoupSession *session, SoupMessage *msg,
-			   SoupSocket *socket, gpointer user_data)
-{
-	if (++msgs_done == MAX_CONNS)
-		g_timeout_add (100, quit_loop, NULL);
-}
-
-static void
-max_conns_message_complete (SoupSession *session, SoupMessage *msg, gpointer user_data)
-{
-	if (++msgs_done == TEST_CONNS)
-		g_main_loop_quit (max_conns_loop);
-}
-
-static void
-do_max_conns_test_for_session (SoupSession *session)
-{
-	SoupMessage *msgs[TEST_CONNS];
-	int i;
-	guint timeout_id;
-
-	max_conns_loop = g_main_loop_new (NULL, TRUE);
-
-	g_mutex_lock (server_mutex);
-
-	g_signal_connect (session, "request-started",
-			  G_CALLBACK (max_conns_request_started), NULL);
-	msgs_done = 0;
-	for (i = 0; i < TEST_CONNS; i++) {
-		msgs[i] = soup_message_new_from_uri ("GET", base_uri);
-		g_object_ref (msgs[i]);
-		soup_session_queue_message (session, msgs[i],
-					    max_conns_message_complete, NULL);
-	}
-
-	g_main_loop_run (max_conns_loop);
-	if (msgs_done != MAX_CONNS) {
-		debug_printf (1, "  Queued %d connections out of max %d?",
-			      msgs_done, MAX_CONNS);
-		errors++;
-	}
-	g_signal_handlers_disconnect_by_func (session, max_conns_request_started, NULL);
-
-	msgs_done = 0;
-	g_idle_add (idle_start_server, NULL);
-	timeout_id = g_timeout_add (1000, quit_loop, NULL);
-	g_main_loop_run (max_conns_loop);
-
-	for (i = 0; i < TEST_CONNS; i++) {
-		if (!SOUP_STATUS_IS_SUCCESSFUL (msgs[i]->status_code)) {
-			debug_printf (1, "    Message %d failed? %d %s\n",
-				      i, msgs[i]->status_code,
-				      msgs[i]->reason_phrase ? msgs[i]->reason_phrase : "-");
-			errors++;
-		}
-	}
-
-	if (msgs_done != TEST_CONNS) {
-		/* Clean up so we don't get a spurious "Leaked
-		 * session" error.
-		 */
-		for (i = 0; i < TEST_CONNS; i++)
-			soup_session_cancel_message (session, msgs[i], SOUP_STATUS_CANCELLED);
-		g_main_loop_run (max_conns_loop);
-		g_source_remove (timeout_id);
-	}
-
-	g_main_loop_unref (max_conns_loop);
-
-	for (i = 0; i < TEST_CONNS; i++)
-		g_object_unref (msgs[i]);
-}
-
-static void
-do_max_conns_test (void)
-{
-	SoupSession *session;
-
-	debug_printf (1, "\nExceeding max-conns\n");
-
-	debug_printf (1, "  Async session\n");
-	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC,
-					 SOUP_SESSION_MAX_CONNS, MAX_CONNS,
-					 NULL);
-	do_max_conns_test_for_session (session);
-	soup_test_session_abort_unref (session);
-
-	debug_printf (1, "  Sync session\n");
-	session = soup_test_session_new (SOUP_TYPE_SESSION_SYNC,
-					 SOUP_SESSION_MAX_CONNS, MAX_CONNS,
-					 NULL);
-	do_max_conns_test_for_session (session);
-	soup_test_session_abort_unref (session);
-}
-
 static gboolean
 cancel_message_timeout (gpointer msg)
 {
@@ -973,7 +622,7 @@ do_cancel_while_reading_test_for_session (SoupSession *session)
 	if (SOUP_IS_SESSION_ASYNC (session))
 		g_timeout_add (100, cancel_message_timeout, msg);
 	else
-		thread = g_thread_create (cancel_message_thread, msg, TRUE, NULL);
+		thread = g_thread_new ("cancel_message_thread", cancel_message_thread, msg);
 
 	soup_session_send_message (session, msg);
 
@@ -1006,6 +655,202 @@ do_cancel_while_reading_test (void)
 	soup_test_session_abort_unref (session);
 }
 
+static void
+do_aliases_test_for_session (SoupSession *session,
+			     const char *redirect_protocol)
+{
+	SoupMessage *msg;
+	SoupURI *uri;
+	const char *redirected_protocol;
+
+	uri = soup_uri_new_with_base (base_uri, "/alias-redirect");
+	msg = soup_message_new_from_uri ("GET", uri);
+	if (redirect_protocol)
+		soup_message_headers_append (msg->request_headers, "X-Redirect-Protocol", redirect_protocol);
+	soup_uri_free (uri);
+	soup_session_send_message (session, msg);
+
+	redirected_protocol = soup_message_headers_get_one (msg->response_headers, "X-Redirected-Protocol");
+
+	if (g_strcmp0 (redirect_protocol, redirected_protocol)) {
+		debug_printf (1, "    redirect went to %s, should have gone to %s!\n",
+			      redirected_protocol ? redirected_protocol : "(none)",
+			      redirect_protocol ? redirect_protocol : "(none)");
+		errors++;
+	} else if (redirect_protocol && !SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
+		debug_printf (1, "    msg failed? (%d %s)\n",
+			      msg->status_code, msg->reason_phrase);
+		errors++;
+	} else if (!redirect_protocol && SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
+		debug_printf (1, "    msg succeeded? (%d %s)\n",
+			      msg->status_code, msg->reason_phrase);
+		errors++;
+	}
+
+	g_object_unref (msg);
+}
+
+static void
+do_aliases_test (void)
+{
+	SoupSession *session;
+	char *aliases[] = { "foo", NULL };
+
+	debug_printf (1, "\nhttp-aliases / https-aliases\n");
+
+	debug_printf (1, "  Default behavior\n");
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+	do_aliases_test_for_session (session, "http");
+	soup_test_session_abort_unref (session);
+
+	debug_printf (1, "  foo-means-https\n");
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC,
+					 SOUP_SESSION_HTTPS_ALIASES, aliases,
+					 NULL);
+	do_aliases_test_for_session (session, "https");
+	soup_test_session_abort_unref (session);
+
+	debug_printf (1, "  foo-means-nothing\n");
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC,
+					 SOUP_SESSION_HTTP_ALIASES, NULL,
+					 NULL);
+	do_aliases_test_for_session (session, NULL);
+	soup_test_session_abort_unref (session);
+}
+
+static void
+do_dot_dot_test (void)
+{
+	SoupSession *session;
+	SoupMessage *msg;
+	SoupURI *uri;
+
+	debug_printf (1, "\n'..' smuggling test\n");
+
+	session = soup_test_session_new (SOUP_TYPE_SESSION_SYNC, NULL);
+
+	uri = soup_uri_new_with_base (base_uri, "/..%2ftest");
+	msg = soup_message_new_from_uri ("GET", uri);
+	soup_uri_free (uri);
+
+	soup_session_send_message (session, msg);
+
+	if (msg->status_code != SOUP_STATUS_BAD_REQUEST) {
+		debug_printf (1, "      FAILED: %d %s (expected Bad Request)\n",
+			      msg->status_code, msg->reason_phrase);
+		errors++;
+	}
+	g_object_unref (msg);
+
+	soup_test_session_abort_unref (session);
+}
+
+static void
+do_ipv6_test (void)
+{
+	SoupServer *ipv6_server;
+	SoupURI *ipv6_uri;
+	SoupAddress *ipv6_addr;
+	SoupSession *session;
+	SoupMessage *msg;
+
+	debug_printf (1, "\nIPv6 server test\n");
+
+	ipv6_addr = soup_address_new ("::1", SOUP_ADDRESS_ANY_PORT);
+	soup_address_resolve_sync (ipv6_addr, NULL);
+	ipv6_server = soup_server_new (SOUP_SERVER_INTERFACE, ipv6_addr,
+				       NULL);
+	g_object_unref (ipv6_addr);
+	soup_server_add_handler (ipv6_server, NULL, server_callback, NULL, NULL);
+	soup_server_run_async (ipv6_server);
+
+	ipv6_uri = soup_uri_new ("http://[::1]/");
+	soup_uri_set_port (ipv6_uri, soup_server_get_port (ipv6_server));
+
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+
+	debug_printf (1, "  HTTP/1.1\n");
+	msg = soup_message_new_from_uri ("GET", ipv6_uri);
+	soup_session_send_message (session, msg);
+	if (!SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
+		debug_printf (1, "    request failed: %d %s\n",
+			      msg->status_code, msg->reason_phrase);
+		errors++;
+	}
+	g_object_unref (msg);
+
+	debug_printf (1, "  HTTP/1.0\n");
+	msg = soup_message_new_from_uri ("GET", ipv6_uri);
+	soup_message_set_http_version (msg, SOUP_HTTP_1_0);
+	soup_session_send_message (session, msg);
+	if (!SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
+		debug_printf (1, "    request failed: %d %s\n",
+			      msg->status_code, msg->reason_phrase);
+		errors++;
+	}
+	g_object_unref (msg);
+
+	soup_uri_free (ipv6_uri);
+	soup_test_session_abort_unref (session);
+	soup_test_server_quit_unref (ipv6_server);
+}
+
+static void
+do_idle_on_dispose_test (void)
+{
+	SoupSession *session;
+	SoupMessage *msg;
+	GMainContext *async_context;
+
+	debug_printf (1, "\nTesting SoupSessionAsync dispose behavior\n");
+
+	async_context = g_main_context_new ();
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC,
+					 SOUP_SESSION_ASYNC_CONTEXT, async_context,
+					 NULL);
+
+	msg = soup_message_new_from_uri ("GET", base_uri);
+	soup_session_send_message (session, msg);
+	g_object_unref (msg);
+
+	while (g_main_context_iteration (async_context, FALSE))
+		;
+
+	g_object_run_dispose (G_OBJECT (session));
+
+	if (g_main_context_iteration (async_context, FALSE)) {
+		debug_printf (1, "  idle was queued!\n");
+		errors++;
+	}
+
+	g_object_unref (session);
+	g_main_context_unref (async_context);
+}
+
+static void
+do_pause_abort_test (void)
+{
+	SoupSession *session;
+	SoupMessage *msg;
+	gpointer ptr;
+
+	debug_printf (1, "\nTesting paused messages don't get leaked on abort\n");
+
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+
+	msg = soup_message_new_from_uri ("GET", base_uri);
+	soup_session_queue_message (session, msg, NULL, NULL);
+	soup_session_pause_message (session, msg);
+
+	g_object_add_weak_pointer (G_OBJECT (msg), &ptr);
+	soup_test_session_abort_unref (session);
+
+	if (ptr) {
+		debug_printf (1, "  msg was leaked\n");
+		errors++;
+	}
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1013,10 +858,8 @@ main (int argc, char **argv)
 
 	test_init (argc, argv, NULL);
 
-	server_mutex = g_mutex_new ();
-
 	server = soup_test_server_new (TRUE);
-	soup_server_add_handler (server, NULL, server_callback, NULL, NULL);
+	soup_server_add_handler (server, NULL, server_callback, "http", NULL);
 	base_uri = soup_uri_new ("http://127.0.0.1/");
 	soup_uri_set_port (base_uri, soup_server_get_port (server));
 
@@ -1028,19 +871,28 @@ main (int argc, char **argv)
 	soup_server_add_auth_domain (server, auth_domain);
 	g_object_unref (auth_domain);
 
+	ssl_server = soup_test_server_new_ssl (TRUE);
+	soup_server_add_handler (ssl_server, NULL, server_callback, "https", NULL);
+	ssl_base_uri = soup_uri_new ("https://127.0.0.1/");
+	soup_uri_set_port (ssl_base_uri, soup_server_get_port (ssl_server));
+
 	do_host_test ();
 	do_callback_unref_test ();
 	do_msg_reuse_test ();
 	do_star_test ();
 	do_early_abort_test ();
-	do_content_length_framing_test ();
 	do_accept_language_test ();
-	do_persistent_connection_timeout_test ();
-	do_max_conns_test ();
 	do_cancel_while_reading_test ();
+	do_aliases_test ();
+	do_dot_dot_test ();
+	do_ipv6_test ();
+	do_idle_on_dispose_test ();
+	do_pause_abort_test ();
 
 	soup_uri_free (base_uri);
+	soup_uri_free (ssl_base_uri);
 	soup_test_server_quit_unref (server);
+	soup_test_server_quit_unref (ssl_server);
 
 	test_cleanup ();
 	return errors != 0;

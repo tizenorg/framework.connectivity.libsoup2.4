@@ -18,7 +18,6 @@
 #include "soup-message-queue.h"
 #include "soup-misc.h"
 #include "soup-socket.h"
-#include "soup-ssl.h"
 
 typedef enum {
 	SOUP_MESSAGE_IO_CLIENT,
@@ -68,7 +67,7 @@ typedef struct {
 	goffset               write_length;
 	goffset               written;
 
-	guint read_tag, write_tag, tls_signal_id;
+	guint read_tag, write_tag;
 	GSource *unpause_source;
 
 	SoupMessageGetHeadersFn   get_headers_cb;
@@ -102,8 +101,6 @@ soup_message_io_cleanup (SoupMessage *msg)
 		return;
 	priv->io_data = NULL;
 
-	if (io->tls_signal_id)
-		g_signal_handler_disconnect (io->sock, io->tls_signal_id);
 	if (io->sock)
 		g_object_unref (io->sock);
 	if (io->item)
@@ -146,8 +143,6 @@ soup_message_io_stop (SoupMessage *msg)
 
 	if (io->read_state < SOUP_MESSAGE_IO_STATE_FINISHING)
 		soup_socket_disconnect (io->sock);
-	else if (io->item && io->item->conn)
-		soup_connection_set_state (io->item->conn, SOUP_CONNECTION_IDLE);
 }
 
 #define SOUP_MESSAGE_IO_EOL            "\r\n"
@@ -321,12 +316,12 @@ read_metadata (SoupMessage *msg, gboolean to_blank)
 		if (got_lf) {
 			if (!to_blank)
 				break;
-			if (nread == 1 &&
+			if (nread == 1 && io->read_meta_buf->len >= 2 &&
 			    !strncmp ((char *)io->read_meta_buf->data +
 				      io->read_meta_buf->len - 2,
 				      "\n\n", 2))
 				break;
-			else if (nread == 2 &&
+			else if (nread == 2 && io->read_meta_buf->len >= 3 &&
 				 !strncmp ((char *)io->read_meta_buf->data +
 					   io->read_meta_buf->len - 3,
 					   "\n\r\n", 3))
@@ -343,6 +338,7 @@ content_decode_one (SoupBuffer *buf, GConverter *converter, GError **error)
 	gsize outbuf_length, outbuf_used, outbuf_cur, input_used, input_cur;
 	char *outbuf;
 	GConverterResult result;
+	gboolean dummy_zlib_header_used = FALSE;
 
 	outbuf_length = MAX (buf->length * 2, 1024);
 	outbuf = g_malloc (outbuf_length);
@@ -362,6 +358,39 @@ content_decode_one (SoupBuffer *buf, GConverter *converter, GError **error)
 			g_clear_error (error);
 			outbuf_length *= 2;
 			outbuf = g_realloc (outbuf, outbuf_length);
+		} else if (input_cur == 0 &&
+			   !dummy_zlib_header_used &&
+			   G_IS_ZLIB_DECOMPRESSOR (converter) &&
+			   g_error_matches (*error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA)) {
+
+			GZlibCompressorFormat format;
+			g_object_get (G_OBJECT (converter), "format", &format, NULL);
+
+			if (format == G_ZLIB_COMPRESSOR_FORMAT_ZLIB) {
+				/* Some servers (especially Apache with mod_deflate)
+				 * return RAW compressed data without the zlib headers
+				 * when the client claims to support deflate. For
+				 * those cases use a dummy header (stolen from
+				 * Mozilla's nsHTTPCompressConv.cpp) and try to
+				 * continue uncompressing data.
+				 */
+				static char dummy_zlib_header[2] = { 0x78, 0x9C };
+
+				g_converter_reset (converter);
+				result = g_converter_convert (converter,
+							      dummy_zlib_header, sizeof(dummy_zlib_header),
+							      outbuf + outbuf_cur, outbuf_length - outbuf_cur,
+							      0, &input_used, &outbuf_used, NULL);
+				dummy_zlib_header_used = TRUE;
+				if (result == G_CONVERTER_CONVERTED) {
+					g_clear_error (error);
+					continue;
+				}
+			}
+
+			g_free (outbuf);
+			return NULL;
+
 		} else if (*error) {
 			/* GZlibDecompressor can't ever return
 			 * G_IO_ERROR_PARTIAL_INPUT unless we pass it
@@ -1050,25 +1079,6 @@ io_read (SoupSocket *sock, SoupMessage *msg)
 	goto read_more;
 }
 
-static void
-socket_tls_certificate_changed (GObject *sock, GParamSpec *pspec,
-				gpointer msg)
-{
-	GTlsCertificate *certificate;
-	GTlsCertificateFlags errors;
-
-	g_object_get (sock,
-		      SOUP_SOCKET_TLS_CERTIFICATE, &certificate,
-		      SOUP_SOCKET_TLS_ERRORS, &errors,
-		      NULL);
-	g_object_set (msg,
-		      SOUP_MESSAGE_TLS_CERTIFICATE, certificate,
-		      SOUP_MESSAGE_TLS_ERRORS, errors,
-		      NULL);
-	if (certificate)
-		g_object_unref (certificate);
-}
-
 static SoupMessageIOData *
 new_iostate (SoupMessage *msg, SoupSocket *sock, SoupMessageIOMode mode,
 	     SoupMessageGetHeadersFn get_headers_cb,
@@ -1099,11 +1109,6 @@ new_iostate (SoupMessage *msg, SoupSocket *sock, SoupMessageIOMode mode,
 
 	io->read_state  = SOUP_MESSAGE_IO_STATE_NOT_STARTED;
 	io->write_state = SOUP_MESSAGE_IO_STATE_NOT_STARTED;
-
-	if (soup_socket_is_ssl (io->sock)) {
-		io->tls_signal_id = g_signal_connect (io->sock, "notify::tls-certificate",
-						      G_CALLBACK (socket_tls_certificate_changed), msg);
-	}
 
 	if (priv->io_data)
 		soup_message_io_cleanup (msg);
@@ -1216,15 +1221,23 @@ soup_message_io_unpause (SoupMessage *msg)
 {
 	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 	SoupMessageIOData *io = priv->io_data;
-	gboolean non_blocking;
+	gboolean non_blocking, use_thread_context;
 	GMainContext *async_context;
 
 	g_return_if_fail (io != NULL);
 
 	g_object_get (io->sock,
 		      SOUP_SOCKET_FLAG_NONBLOCKING, &non_blocking,
-		      SOUP_SOCKET_ASYNC_CONTEXT, &async_context,
+		      SOUP_SOCKET_USE_THREAD_CONTEXT, &use_thread_context,
 		      NULL);
+	if (use_thread_context)
+		async_context = g_main_context_ref_thread_default ();
+	else {
+		g_object_get (io->sock,
+			      SOUP_SOCKET_ASYNC_CONTEXT, &async_context,
+			      NULL);
+	}
+
 	if (non_blocking) {
 		if (!io->unpause_source) {
 			io->unpause_source = soup_add_completion (

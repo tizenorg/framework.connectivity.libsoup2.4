@@ -43,8 +43,6 @@
 #include "soup-session.h"
 #include "soup-session-feature.h"
 #include "soup-uri.h"
-/*TIZEN patch*/
-#include "TIZEN.h"
 
 static SoupSessionFeatureInterface *soup_cache_default_feature_interface;
 static void soup_cache_session_feature_init (SoupSessionFeatureInterface *feature_interface, gpointer interface_data);
@@ -149,6 +147,7 @@ get_cacheability (SoupCache *cache, SoupMessage *msg)
 {
 	SoupCacheability cacheability;
 	const char *cache_control, *content_type;
+	gboolean has_max_age = FALSE;
 
 	/* 1. The request method must be cacheable */
 	if (msg->method == SOUP_METHOD_GET)
@@ -165,7 +164,7 @@ get_cacheability (SoupCache *cache, SoupMessage *msg)
 		return SOUP_CACHE_UNCACHEABLE;
 
 	cache_control = soup_message_headers_get (msg->response_headers, "Cache-Control");
-	if (cache_control) {
+	if (cache_control && *cache_control) {
 		GHashTable *hash;
 		SoupCachePrivate *priv = SOUP_CACHE_GET_PRIVATE (cache);
 
@@ -187,6 +186,9 @@ get_cacheability (SoupCache *cache, SoupMessage *msg)
 			return SOUP_CACHE_UNCACHEABLE;
 		}
 
+		if (g_hash_table_lookup_extended (hash, "max-age", NULL, NULL))
+			has_max_age = TRUE;
+
 		/* This does not appear in section 2.1, but I think it makes
 		 * sense to check it too?
 		 */
@@ -197,6 +199,12 @@ get_cacheability (SoupCache *cache, SoupMessage *msg)
 
 		soup_header_free_param_list (hash);
 	}
+
+	/* Section 13.9 */
+	if ((soup_message_get_uri (msg))->query &&
+	    !soup_message_headers_get_one (msg->response_headers, "Expires") &&
+	    !has_max_age)
+		return SOUP_CACHE_UNCACHEABLE;
 
 	switch (msg->status_code) {
 	case SOUP_STATUS_PARTIAL_CONTENT:
@@ -960,7 +968,7 @@ msg_got_headers_cb (SoupMessage *msg, gpointer user_data)
 		/* Check if we are already caching this resource */
 		entry = soup_cache_entry_lookup (cache, msg);
 
-		if (entry && entry->dirty)
+		if (entry && (entry->dirty || entry->being_validated))
 			return;
 
 		/* Create a new entry, deleting any old one if present */
@@ -1252,6 +1260,17 @@ soup_cache_class_init (SoupCacheClass *cache_class)
 }
 
 /**
+ * SoupCacheType:
+ * @SOUP_CACHE_SINGLE_USER: a single-user cache
+ * @SOUP_CACHE_SHARED: a shared cache
+ *
+ * The type of cache; this affects what kinds of responses will be
+ * saved.
+ *
+ * Since: 2.34
+ */
+
+/**
  * soup_cache_new:
  * @cache_dir: the directory to store the cached data, or %NULL to use the default one
  * @cache_type: the #SoupCacheType of the cache
@@ -1531,12 +1550,24 @@ soup_cache_generate_conditional_request (SoupCache *cache, SoupMessage *original
 	SoupMessage *msg;
 	SoupURI *uri;
 	SoupCacheEntry *entry;
-	const char *value;
+	const char *last_modified, *etag;
 
 	g_return_val_if_fail (SOUP_IS_CACHE (cache), NULL);
 	g_return_val_if_fail (SOUP_IS_MESSAGE (original), NULL);
 
-	/* First copy the data we need from the original message */
+	/* Add the validator entries in the header from the cached data */
+	entry = soup_cache_entry_lookup (cache, original);
+	g_return_val_if_fail (entry, NULL);
+
+	last_modified = soup_message_headers_get_one (entry->headers, "Last-Modified");
+	etag = soup_message_headers_get_one (entry->headers, "ETag");
+
+	if (!last_modified && !etag)
+		return NULL;
+
+	entry->being_validated = TRUE;
+
+	/* Copy the data we need from the original message */
 	uri = soup_message_get_uri (original);
 	msg = soup_message_new_from_uri (original->method, uri);
 
@@ -1544,23 +1575,15 @@ soup_cache_generate_conditional_request (SoupCache *cache, SoupMessage *original
 				      (SoupMessageHeadersForeachFunc)copy_headers,
 				      msg->request_headers);
 
-	/* Now add the validator entries in the header from the cached
-	   data */
-	entry = soup_cache_entry_lookup (cache, original);
-	g_return_val_if_fail (entry, NULL);
-
-	entry->being_validated = TRUE;
-
-	value = soup_message_headers_get (entry->headers, "Last-Modified");
-	if (value)
+	if (last_modified)
 		soup_message_headers_append (msg->request_headers,
 					     "If-Modified-Since",
-					     value);
-	value = soup_message_headers_get (entry->headers, "ETag");
-	if (value)
+					     last_modified);
+	if (etag)
 		soup_message_headers_append (msg->request_headers,
 					     "If-None-Match",
-					     value);
+					     etag);
+
 	return msg;
 }
 
@@ -1590,12 +1613,6 @@ pack_entry (gpointer data,
 		return;
 
 	g_variant_builder_open (entries_builder, G_VARIANT_TYPE (SOUP_CACHE_PHEADERS_FORMAT));
-#if ENABLE(TIZEN_FIX_PACK_ENTRY)
-	if (!g_utf8_validate (entry->uri, -1, NULL)) {
-		g_variant_builder_close (entries_builder);
-		return;
-	}
-#endif
 	g_variant_builder_add (entries_builder, "s", entry->uri);
 	g_variant_builder_add (entries_builder, "b", entry->must_revalidate);
 	g_variant_builder_add (entries_builder, "u", entry->freshness_lifetime);

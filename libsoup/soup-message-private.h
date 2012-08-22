@@ -96,4 +96,12 @@ gboolean            soup_message_io_in_progress (SoupMessage          *msg);
 
 gboolean soup_message_disables_feature (SoupMessage *msg,
 					gpointer     feature);
+
+void soup_message_set_https_status (SoupMessage    *msg,
+				    SoupConnection *conn);
+
+void soup_message_network_event (SoupMessage         *msg,
+				 GSocketClientEvent   event,
+				 GIOStream           *connection);
+
 #endif /* SOUP_MESSAGE_PRIVATE_H */

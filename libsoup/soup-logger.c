@@ -35,8 +35,8 @@
  * and then attach it to a session (or multiple sessions) with
  * soup_session_add_feature().
  *
- * By default, the debugging output is sent to %stdout, and looks
- * something like:
+ * By default, the debugging output is sent to
+ * <literal>stdout</literal>, and looks something like:
  *
  * <informalexample><screen>
  * > POST /unauth HTTP/1.1
@@ -98,7 +98,7 @@ typedef struct {
 	/* We use a mutex so that if requests are being run in
 	 * multiple threads, we don't mix up the output.
 	 */
-	GMutex             *lock;
+	GMutex             lock;
 
 	GQuark              tag;
 	GHashTable         *ids;
@@ -125,7 +125,7 @@ soup_logger_init (SoupLogger *logger)
 {
 	SoupLoggerPrivate *priv = SOUP_LOGGER_GET_PRIVATE (logger);
 
-	priv->lock = g_mutex_new ();
+	g_mutex_init (&priv->lock);
 	priv->tag = g_quark_from_static_string (g_strdup_printf ("SoupLogger-%p", logger));
 	priv->ids = g_hash_table_new (NULL, NULL);
 }
@@ -144,7 +144,7 @@ finalize (GObject *object)
 	if (priv->printer_dnotify)
 		priv->printer_dnotify (priv->printer_data);
 
-	g_mutex_free (priv->lock);
+	g_mutex_clear (&priv->lock);
 
 	G_OBJECT_CLASS (soup_logger_parent_class)->finalize (object);
 }
@@ -310,7 +310,7 @@ soup_logger_set_response_filter (SoupLogger       *logger,
  * @destroy: a #GDestroyNotify to free @printer_data
  *
  * Sets up an alternate log printing routine, if you don't want
- * the log to go to %stdout.
+ * the log to go to <literal>stdout</literal>.
  **/
 void
 soup_logger_set_printer (SoupLogger        *logger,
@@ -422,10 +422,21 @@ soup_logger_print (SoupLogger *logger, SoupLoggerLogLevel level,
 static void
 soup_logger_print_basic_auth (SoupLogger *logger, const char *value)
 {
-	char *decoded, *p;
+	char *decoded, *decoded_utf8, *p;
 	gsize len;
 
 	decoded = (char *)g_base64_decode (value + 6, &len);
+	if (decoded && !g_utf8_validate (decoded, -1, NULL)) {
+		decoded_utf8 = g_convert_with_fallback (decoded, -1,
+							"UTF-8", "ISO-8859-1",
+							NULL, NULL, &len,
+							NULL);
+		if (decoded_utf8) {
+			g_free (decoded);
+			decoded = decoded_utf8;
+		}
+	}
+
 	if (!decoded)
 		decoded = g_strdup (value);
 	p = strchr (decoded, ':');
@@ -576,7 +587,7 @@ got_informational (SoupMessage *msg, gpointer user_data)
 	SoupLogger *logger = user_data;
 	SoupLoggerPrivate *priv = SOUP_LOGGER_GET_PRIVATE (logger);
 
-	g_mutex_lock (priv->lock);
+	g_mutex_lock (&priv->lock);
 
 	print_response (logger, msg);
 	soup_logger_print (logger, SOUP_LOGGER_LOG_MINIMAL, ' ', "");
@@ -601,7 +612,7 @@ got_informational (SoupMessage *msg, gpointer user_data)
 		soup_logger_print (logger, SOUP_LOGGER_LOG_MINIMAL, ' ', "");
 	}
 
-	g_mutex_unlock (priv->lock);
+	g_mutex_unlock (&priv->lock);
 }
 
 static void
@@ -610,12 +621,12 @@ got_body (SoupMessage *msg, gpointer user_data)
 	SoupLogger *logger = user_data;
 	SoupLoggerPrivate *priv = SOUP_LOGGER_GET_PRIVATE (logger);
 
-	g_mutex_lock (priv->lock);
+	g_mutex_lock (&priv->lock);
 
 	print_response (logger, msg);
 	soup_logger_print (logger, SOUP_LOGGER_LOG_MINIMAL, ' ', "");
 
-	g_mutex_unlock (priv->lock);
+	g_mutex_unlock (&priv->lock);
 }
 
 static void

@@ -13,10 +13,7 @@
 #include "soup-message-queue.h"
 #include "soup-uri.h"
 
-/**
- * SECTION:soup-message-queue
- *
- * This is an internal structure used by #SoupSession and its
+/* This is an internal structure used by #SoupSession and its
  * subclasses to keep track of the status of messages currently being
  * processed.
  *
@@ -32,7 +29,7 @@
 struct _SoupMessageQueue {
 	SoupSession *session;
 
-	GMutex *mutex;
+	GMutex mutex;
 	SoupMessageQueueItem *head, *tail;
 };
 
@@ -43,7 +40,7 @@ soup_message_queue_new (SoupSession *session)
 
 	queue = g_slice_new0 (SoupMessageQueue);
 	queue->session = session;
-	queue->mutex = g_mutex_new ();
+	g_mutex_init (&queue->mutex);
 	return queue;
 }
 
@@ -52,7 +49,7 @@ soup_message_queue_destroy (SoupMessageQueue *queue)
 {
 	g_return_if_fail (queue->head == NULL);
 
-	g_mutex_free (queue->mutex);
+	g_mutex_clear (&queue->mutex);
 	g_slice_free (SoupMessageQueue, queue);
 }
 
@@ -75,8 +72,7 @@ queue_message_restarted (SoupMessage *msg, gpointer user_data)
 	     SOUP_STATUS_IS_REDIRECTION (msg->status_code))) {
 		if (soup_connection_get_state (item->conn) == SOUP_CONNECTION_IN_USE)
 			soup_connection_set_state (item->conn, SOUP_CONNECTION_IDLE);
-		g_object_unref (item->conn);
-		item->conn = NULL;
+		soup_message_queue_item_set_connection (item, NULL);
 	}
 
 	soup_message_cleanup_response (msg);
@@ -106,6 +102,7 @@ soup_message_queue_append (SoupMessageQueue *queue, SoupMessage *msg,
 
 	item = g_slice_new0 (SoupMessageQueueItem);
 	item->session = queue->session;
+	item->async_context = soup_session_get_async_context (item->session);
 	item->queue = queue;
 	item->msg = g_object_ref (msg);
 	item->callback = callback;
@@ -121,7 +118,7 @@ soup_message_queue_append (SoupMessageQueue *queue, SoupMessage *msg,
 	 */
 	item->ref_count = 1;
 
-	g_mutex_lock (queue->mutex);
+	g_mutex_lock (&queue->mutex);
 	if (queue->head) {
 		queue->tail->next = item;
 		item->prev = queue->tail;
@@ -129,7 +126,7 @@ soup_message_queue_append (SoupMessageQueue *queue, SoupMessage *msg,
 	} else
 		queue->head = queue->tail = item;
 
-	g_mutex_unlock (queue->mutex);
+	g_mutex_unlock (&queue->mutex);
 	return item;
 }
 
@@ -156,13 +153,13 @@ soup_message_queue_item_ref (SoupMessageQueueItem *item)
 void
 soup_message_queue_item_unref (SoupMessageQueueItem *item)
 {
-	g_mutex_lock (item->queue->mutex);
+	g_mutex_lock (&item->queue->mutex);
 
 	/* Decrement the ref_count; if it's still non-zero OR if the
 	 * item is still in the queue, then return.
 	 */
 	if (--item->ref_count || !item->removed) {
-		g_mutex_unlock (item->queue->mutex);
+		g_mutex_unlock (&item->queue->mutex);
 		return;
 	}
 
@@ -176,7 +173,7 @@ soup_message_queue_item_unref (SoupMessageQueueItem *item)
 	else
 		item->queue->tail = item->prev;
 
-	g_mutex_unlock (item->queue->mutex);
+	g_mutex_unlock (&item->queue->mutex);
 
 	/* And free it */
 	g_signal_handlers_disconnect_by_func (item->msg,
@@ -187,9 +184,37 @@ soup_message_queue_item_unref (SoupMessageQueueItem *item)
 		g_object_unref (item->proxy_addr);
 	if (item->proxy_uri)
 		soup_uri_free (item->proxy_uri);
-	if (item->conn)
-		g_object_unref (item->conn);
+	soup_message_queue_item_set_connection (item, NULL);
 	g_slice_free (SoupMessageQueueItem, item);
+}
+
+static void
+proxy_connection_event (SoupConnection      *conn,
+			GSocketClientEvent   event,
+			GIOStream           *connection,
+			gpointer             user_data)
+{
+	SoupMessageQueueItem *item = user_data;
+
+	soup_message_network_event (item->msg, event, connection);
+}
+
+void
+soup_message_queue_item_set_connection (SoupMessageQueueItem *item,
+					SoupConnection       *conn)
+{
+	if (item->conn) {
+		g_signal_handlers_disconnect_by_func (item->conn, proxy_connection_event, item);
+		g_object_unref (item->conn);
+	}
+
+	item->conn = conn;
+
+	if (item->conn) {
+		g_object_ref (item->conn);
+		g_signal_connect (item->conn, "event",
+				  G_CALLBACK (proxy_connection_event), item);
+	}
 }
 
 /**
@@ -208,7 +233,7 @@ soup_message_queue_lookup (SoupMessageQueue *queue, SoupMessage *msg)
 {
 	SoupMessageQueueItem *item;
 
-	g_mutex_lock (queue->mutex);
+	g_mutex_lock (&queue->mutex);
 
 	item = queue->tail;
 	while (item && (item->removed || item->msg != msg))
@@ -217,7 +242,7 @@ soup_message_queue_lookup (SoupMessageQueue *queue, SoupMessage *msg)
 	if (item)
 		item->ref_count++;
 
-	g_mutex_unlock (queue->mutex);
+	g_mutex_unlock (&queue->mutex);
 	return item;
 }
 
@@ -238,7 +263,7 @@ soup_message_queue_first (SoupMessageQueue *queue)
 {
 	SoupMessageQueueItem *item;
 
-	g_mutex_lock (queue->mutex);
+	g_mutex_lock (&queue->mutex);
 
 	item = queue->head;
 	while (item && item->removed)
@@ -247,7 +272,7 @@ soup_message_queue_first (SoupMessageQueue *queue)
 	if (item)
 		item->ref_count++;
 
-	g_mutex_unlock (queue->mutex);
+	g_mutex_unlock (&queue->mutex);
 	return item;
 }
 
@@ -268,7 +293,7 @@ soup_message_queue_next (SoupMessageQueue *queue, SoupMessageQueueItem *item)
 {
 	SoupMessageQueueItem *next;
 
-	g_mutex_lock (queue->mutex);
+	g_mutex_lock (&queue->mutex);
 
 	next = item->next;
 	while (next && next->removed)
@@ -276,7 +301,7 @@ soup_message_queue_next (SoupMessageQueue *queue, SoupMessageQueueItem *item)
 	if (next)
 		next->ref_count++;
 
-	g_mutex_unlock (queue->mutex);
+	g_mutex_unlock (&queue->mutex);
 	soup_message_queue_item_unref (item);
 	return next;
 }
@@ -294,7 +319,7 @@ soup_message_queue_remove (SoupMessageQueue *queue, SoupMessageQueueItem *item)
 {
 	g_return_if_fail (!item->removed);
 
-	g_mutex_lock (queue->mutex);
+	g_mutex_lock (&queue->mutex);
 	item->removed = TRUE;
-	g_mutex_unlock (queue->mutex);
+	g_mutex_unlock (&queue->mutex);
 }

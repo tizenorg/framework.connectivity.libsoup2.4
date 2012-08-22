@@ -1,3 +1,272 @@
+Changes in libsoup from 2.38.0 to 2.38.1:
+
+	* Fixed a situation where soup_connection_disconnect() could
+	  end up calling g_object_unref(NULL) when an idle connection
+	  was closed. [Sergio, #672178]
+
+	* Fixed two warnings when cancelling an in-progress
+          soup_socket_connect_async(). [pointed out on the mailing
+	  list by Sven Neumann]
+
+	* Fixed a crash when disposing a SoupServer with open
+          connections. [#673468, Jonny Lamb]
+
+	* Fixed the SoupSession:ssl-use-system-ca-file property to get
+	  turned off (rather than on) when you set it to FALSE... Also
+	  fixed up the property notifications around the various
+	  certificate-verification properties (ssl-ca-file,
+	  ssl-use-system-ca-file, and tls-database).
+
+	* Fixed SoupSession to not leak paused SoupMessages that
+	  were still in progress when it was unreffed. [#673905]
+
+	* Updated the win32 file: URI code again, to fix regressions
+	  in the WebKit tests. [WebKit bug #82484]
+
+Changes in libsoup from 2.37.92 to 2.38.0:
+
+	* Minor documentation fixes
+
+Changes in libsoup from 2.37.91 to 2.37.92:
+
+	* Added soup_session_prefetch_dns() and deprecated
+          soup_session_prepare_for_uri(). The new method takes a
+          completion callback, allowing you to know how many DNS
+          resolutions are currently outstanding, so you don't spam the
+          resolver. [Sergio, WebKit bug #41630]
+
+Changes in libsoup from 2.37.90 to 2.37.91:
+
+	* Fixed an out-of-bounds memory read that could occur when
+	  parsing malformed requests/responses.
+
+	* Fixed a build-related bug in Makefile.glib that affected
+          locales such as Estonian where "Z" is not the last (ASCII)
+          letter of the alphabet. [#654395, Priit Laes]
+
+	* Fixed the handling of file: URIs with query components,
+          which got broken in 2.37.90.
+
+	* Fixed SoupAuthManagerNTLM to not fall back to allowing Basic
+          auth when NTLM failed.
+
+	* Further tweaked the warnings/fallback in SoupURI, so that
+	  soup_uri_to_string() on an http URI with a NULL path would
+	  translate that to "/" like it used to. [#670431]
+
+	* Fixed a warning when cancelling the load of a page with many
+          subresources. [#667245]
+
+	* Use G_GNUC_BEGIN/END_IGNORE_DEPRECATIONS if GLib is new
+          enough, to avoid getting warned about the use of
+          GValueArray.
+
+Changes in libsoup from 2.37.5 to 2.37.90:
+
+	* libsoup is now beta-testing Makefile.glib from bug 654395.
+          If 2.37.90 fails to build in some strange way that 2.37.5
+          did not, this is probably why.
+
+	* Replaced some of the SoupURI g_return_if_fail()s that were
+	  added in 2.37.5 with g_warn_if_fail()s. Although it had
+	  always been documented that SoupURIs must have a non-NULL
+	  path, most SoupURI functions treated NULL the same as "",
+	  and various apps (eg, rhythmbox, midori) were accidentally
+	  relying on this. [Dan]
+
+	* Added various return-if-fails and other sanity checks to
+          various functions. [#669479, Robert Swain, Mark Nauwelaerts,
+          Simon McVittie]
+
+	* Updated docs/annotation of soup_form_decode_multipart() to
+          note that all of the out parameters are (allow-none). Fixed
+          the file_control_name parameter to actually allow NULL like
+          the docs already claimed. [#669479, Simon McVittie]
+
+	* Fixed a minor URI parsing bug. (It was allowing URI schemes
+          to contain numbers.) [Dan]
+
+	* Fixed a few memory leaks introduced in the 2.37 cycle. [Dan]
+
+	* Fixed SoupServer to be able to correctly respond to HTTP/1.0
+          requests over IPv6 (which previously would always have
+          returned "400 Bad Request"). [#666399, Dan]
+
+	* Changed SoupSessionAsync to make it possible to finalize it
+          from the "wrong" thread. [#667364, Dan].
+
+	* Fixed SoupCache to not cache resources whose URIs have query
+          components (unless they have explicit cache headers); to not
+          generate broken conditional requests for resources that
+          cannot be conditionally validated; and to not spew warnings
+          when receiving invalid Cache-Control headers. [#668865,
+          Sergio].
+
+Changes in libsoup from 2.37.4 to 2.37.5:
+
+	* Fixed a bug in SoupSession:use-thread-context [Dan]
+
+	* Fixed the case of cancelling a message from
+          SoupSession::request-started [#668098, Raphael Kubo da
+          Costa]
+
+	* Fixed a crash in epiphany when loading a page with more than
+	  1000 or so images. [#668508, Dan]
+
+	* Fixed a bunch of cases involving invalid URLs found while
+          testing SoupServer against an HTTP protocol fuzzer. Also
+          fixed up some documentation/annotations and added some new
+          test cases. [#667637, Simon McVittie]
+
+	* Fixed SoupRequestFile to work on Windows. [Paweł Forysiuk]
+
+Changes in libsoup from 2.37.3 to 2.37.4:
+
+	* SoupMessage now has a "network-event" signal that can be
+          monitored for information about DNS, proxy lookup, TCP
+          connections, and TLS handshakes. [Dan]
+
+	* The HTTP header parsing code now avoids hitting
+          g_return_if_fails() (and returns an error instead) in a few
+          cases of seriously-invalid headers. [#666316, Simon
+          McVittie, Dan]
+
+	* POSTs and other non-idempotent requests are now always sent
+          on newly-created connections. You can also force this
+          behavior on other messages by setting the
+          SOUP_MESSAGE_NEW_CONNECTION flag. [#578990, Dan]
+
+	* Server-closed idle connections are now detected ahead of
+          time on Windows, preventing occasional spurious "Connection
+          terminated unexpectedly" errors. (This had been fixed on
+          UNIX since 2.28, but the earlier fix didn't work with
+          WinSock.) [#578990, Dan]
+
+	* Plugged a leak in SoupRequestHTTP. [#667099, Xan]
+
+Changes in libsoup from 2.37.2 to 2.37.3:
+
+	* Now requires glib 2.31
+
+	* Simplified SoupHTTPInputStream and SoupRequestHTTP, allowing
+          related simplifications in WebKit's ResourceHandleSoup. This
+          is an ABI-incompatible change, but SoupHTTPInputStream is an
+          unstable API. [#663451, Dan]
+
+	* Fixed a bug that caused the SOUP_MESSAGE_CERTIFICATE_TRUSTED
+          flag to always be cleared, causing epiphany to claim all
+          https pages were untrusted. [#665182, Dan]
+
+	* Fixed some bugs in the handling of SoupSession:http-aliases
+          and SoupSession:https-aliases.
+
+	* Fixed handling of ACLOCAL_FLAGS [#641470, Craig Keogh]
+
+	* Fixed SoupContentDecoder's "ignore Content-Encoding: gzip
+          because the server didn't actually mean it" hack to handle
+          x-gzip too.
+
+	* Clarified the documentation on SoupSession:ssl-strict
+          [#666280]
+
+Changes in libsoup from 2.37.1 to 2.37.2:
+
+	* Fixed up the output of SoupDirectoryInputStream, thus
+          improving the display of local directories in WebKit-based
+          browsers. [#662266, Sergio]
+
+	* Fixed a bug introduced in 2.37.1 that caused some cancelled
+          SoupMessages to be leaked. [#662847, Sergio]
+
+	* Added new SoupSession properties "http-aliases" and
+          "https-aliases" that allow you to configure more explicitly
+	  what URL protocols are treated as aliases for http (eg,
+          "dav:", "webcal:", etc), and which should be recognized as
+	  meaning something else, (eg, "ftp:") [Dan]
+
+	* Added soup_session_would_redirect() and
+          soup_session_redirect_message(), to help users that want to
+          handle some or all redirects themselves. Added
+          soup_message_set_redirect() to make it easier to return
+          redirection responses from a SoupServer. [Dan]
+
+	* Added the SoupSession "use-thread-context" property, which
+	  tells it to use GMainContexts in a gio-compliant way (and in
+	  particular, allows having different messages running in
+	  different GMainContexts on the same SoupSession, though only
+	  to a limited extent since SoupSessionAsync is still not
+	  thread-safe). In particular, this was added in order to
+	  address WebKit bug 68238. [Dan]
+
+	* Made SoupURI %-encode non-ASCII characters when parsing
+          URIs, in particular to fix a problem with certain servers
+          sending syntactically invalid redirects that they would then
+          only interpret correctly if you fixed the syntax for them.
+          (@$!@#! Although the new code is probably more correct than
+          the old code anyway, so...) [#662806, Dan]
+
+	* Fixed a connection-handling bug that could cause problems
+          with servers that requested authentication and then timed
+          out the connection while the application was waiting for the
+          user to enter a password. [#660057, Dan]
+
+	* Made NTLM and Basic authentication handle some non-ASCII
+          usernames and passwords. (NTLM should handle most. It's
+          impossible to fix Basic in the general case.) [#576838,
+          Joachim Breitner, "sponsored by ITOMIG GmbH and the City of
+          Böblingen"]
+
+	* Added support for "deflate" Content-Encoding, so that we can
+	  work with broken servers that insisted on using it even
+	  though we explicitly indicated in the request headers that
+	  we didn't support it. (@$#!#) [#661682, Sergio]
+
+Changes in libsoup from 2.36.0 to 2.37.1:
+
+	* Fixed a problem with connections being assigned to multiple
+          requests at once after a redirection [#651146, Sergio]. Made
+          soup_session_pause/unpause_message() work in any state, not
+          just while the HTTP I/O is occurring, and used this to add a
+          test case for that bug. [Dan]
+
+	* Ported SoupSession to use GTlsDatabase internally, and added
+          two new properties, SoupSession:use-system-ca-file (to
+          specify that the session should use the default system
+          tlsdb) and SoupSession:tlsdb (to specify a specific tlsdb to
+          use). [Dan]
+
+	* Likewise, added SoupServer:tls-certificate, for specifying a
+          certificate/key for an https server to use.
+
+	* Made SoupHTTPInputStream use memory more efficiently.
+          [#659255, Sergio]
+
+	* Fixed soup_message_get_https_status() to return information
+          more reliably (with latest glib-networking).
+
+	* Bumped the glib requirement to 2.30.0; although libsoup does
+          not use any new glib 2.30 APIs, there are several important
+          bugfixes in glib between 2.28 and 2.30 that libsoup needs.
+	  Currently libsoup builds against either glib 2.30.x or glib
+	  2.31.x.
+
+Changes in libsoup from 2.35.92 to 2.36.0:
+
+	* Improvements to gtk-doc documentation. [Dan]
+
+Changes in libsoup from 2.35.90 to 2.35.92:
+
+	* Fixed a problem where SoupHTTPRequest response bodies could
+          be truncated. [#659256, Sergio]
+
+	* Fixed a bug in copying TLS information from SoupSocket to
+	  SoupMessage, causing all https connections to be reported as
+	  "untrusted" in epiphany. [Dan]
+
+	* Made SoupSession remove items from its host cache after a
+          while, so that if a host changes IP address, it will
+          eventually try to re-resolve it. [#646959, Sergio]
+
 Changes in libsoup from 2.35.5 to 2.35.90:
 
 	* Added SOUP_MESSAGE_CAN_REBUILD flag, to use with

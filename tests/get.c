@@ -61,6 +61,13 @@ get_url (const char *url)
 		while (soup_message_headers_iter_next (&iter, &hname, &value))
 			printf ("%s: %s\r\n", hname, value);
 		printf ("\n");
+	} else if (msg->status_code == SOUP_STATUS_SSL_FAILED) {
+		GTlsCertificateFlags flags;
+
+		if (soup_message_get_https_status (msg, NULL, &flags))
+			printf ("%s: %d %s (0x%x)\n", name, msg->status_code, msg->reason_phrase, flags);
+		else
+			printf ("%s: %d %s (no handshake status)\n", name, msg->status_code, msg->reason_phrase);
 	} else if (!quiet || SOUP_STATUS_IS_TRANSPORT_ERROR (msg->status_code))
 		printf ("%s: %d %s\n", name, msg->status_code, msg->reason_phrase);
 
@@ -98,15 +105,14 @@ main (int argc, char **argv)
 {
 	const char *cafile = NULL, *url;
 	SoupURI *proxy = NULL, *parsed;
-	gboolean synchronous = FALSE;
+	gboolean synchronous = FALSE, ntlm = FALSE;
 	int opt;
 
-	g_thread_init (NULL);
 	g_type_init ();
 
 	method = SOUP_METHOD_GET;
 
-	while ((opt = getopt (argc, argv, "c:dhp:qs")) != -1) {
+	while ((opt = getopt (argc, argv, "c:dhnp:qs")) != -1) {
 		switch (opt) {
 		case 'c':
 			cafile = optarg;
@@ -119,6 +125,10 @@ main (int argc, char **argv)
 		case 'h':
 			method = SOUP_METHOD_HEAD;
 			debug = TRUE;
+			break;
+
+		case 'n':
+			ntlm = TRUE;
 			break;
 
 		case 'p':
@@ -166,6 +176,7 @@ main (int argc, char **argv)
 			SOUP_SESSION_ADD_FEATURE_BY_TYPE, SOUP_TYPE_COOKIE_JAR,
 			SOUP_SESSION_USER_AGENT, "get ",
 			SOUP_SESSION_ACCEPT_LANGUAGE_AUTO, TRUE,
+			SOUP_SESSION_USE_NTLM, ntlm,
 			NULL);
 	} else {
 		session = soup_session_async_new_with_options (
@@ -177,6 +188,7 @@ main (int argc, char **argv)
 			SOUP_SESSION_ADD_FEATURE_BY_TYPE, SOUP_TYPE_COOKIE_JAR,
 			SOUP_SESSION_USER_AGENT, "get ",
 			SOUP_SESSION_ACCEPT_LANGUAGE_AUTO, TRUE,
+			SOUP_SESSION_USE_NTLM, ntlm,
 			NULL);
 	}
 

@@ -3,11 +3,11 @@ dnl *** Initialize automake and set version ***
 dnl *******************************************
 
 AC_PREREQ(2.63)
-AC_INIT([libsoup],[2.35.90],[http://bugzilla.gnome.org/enter_bug.cgi?product=libsoup])
+AC_INIT([libsoup],[2.38.1],[http://bugzilla.gnome.org/enter_bug.cgi?product=libsoup])
 AC_CONFIG_SRCDIR([libsoup-2.4.pc.in])
 AC_CONFIG_MACRO_DIR([m4])
 
-AM_INIT_AUTOMAKE([foreign 1.9])
+AM_INIT_AUTOMAKE([1.11 foreign no-dist-gzip dist-xz -Wno-portability])
 m4_ifdef([AM_SILENT_RULES],[AM_SILENT_RULES([yes])],)
 
 AC_PROG_MAKE_SET
@@ -16,10 +16,10 @@ SOUP_API_VERSION=2.4
 AC_SUBST(SOUP_API_VERSION)
 
 # Increment on interface addition. Reset on removal.
-SOUP_AGE=4
+SOUP_AGE=5
 
 # Increment on interface add, remove, or change.
-SOUP_CURRENT=5
+SOUP_CURRENT=6
 
 # Increment on source change. Reset when CURRENT changes.
 SOUP_REVISION=0
@@ -53,9 +53,9 @@ fi
 AC_SUBST(SOUP_DEBUG_FLAGS)
 
 # Set the maintainer flags
-if test -d .git; then
-	SOUP_MAINTAINER_FLAGS="-DG_DISABLE_DEPRECATED"
-fi
+#if test -d .git; then
+#	SOUP_MAINTAINER_FLAGS="-DG_DISABLE_DEPRECATED"
+#fi
 AC_SUBST(SOUP_MAINTAINER_FLAGS)
 
 dnl ***************************
@@ -72,11 +72,15 @@ dnl ***********************
 dnl *** Checks for glib ***
 dnl ***********************
 
-AM_PATH_GLIB_2_0(2.27.5,,,gobject gthread gio)
+GLIB_REQUIRED=2.31.7
+AM_PATH_GLIB_2_0($GLIB_REQUIRED,,,gobject gio)
 if test "$GLIB_LIBS" = ""; then
-   AC_MSG_ERROR(GLIB 2.27.5 or later is required to build libsoup)
+   AC_MSG_ERROR(GLIB $GLIB_REQUIRED or later is required to build libsoup)
 fi
 GLIB_CFLAGS="$GLIB_CFLAGS -DG_DISABLE_SINGLE_INCLUDES"
+
+GLIB_MAKEFILE='$(top_srcdir)/Makefile.glib'
+AC_SUBST(GLIB_MAKEFILE)
 
 PKG_CHECK_MODULES(XML, libxml-2.0)
 AC_SUBST(XML_CFLAGS)
@@ -105,30 +109,6 @@ dnl *******************
 AC_CHECK_FUNCS(gmtime_r)
 AC_CHECK_FUNCS(mmap)
 AC_CHECK_FUNC(socket, , AC_CHECK_LIB(socket, socket))
-
-dnl *************************
-dnl *** SQL Lite support  ***
-dnl *************************
- 
-AC_ARG_ENABLE(sqllite,
-         AS_HELP_STRING([--enable-sqllite], [Enable SQL lite support ]),        ,
-         enable_sqllite=no)
- 
-if test "$enable_sqllite" != "no"; then
-   PKG_CHECK_MODULES(SQLITE, sqlite3, :, [AC_MSG_ERROR(dnl
-[Could not find sqlite3 devel files:
-
-$SQLITE_PKG_ERRORS
- 
-Pass "--without-sqlite" to configure if you want to build libsoup
-without sql lite support.])])
-
-fi
- 
-AC_SUBST(SQLITE_CFLAGS)
-AC_SUBST(SQLITE_LIBS)
-
-AM_CONDITIONAL(SQLLITE_SUPPORT, [test $enable_sqllite = yes])
 
 dnl *********************
 dnl *** GNOME support ***
@@ -176,35 +156,6 @@ dnl *****************************
 dnl *** gobject-introspection ***
 dnl *****************************
 GOBJECT_INTROSPECTION_CHECK([0.9.5])
-
-dnl *************************************
-dnl *** Warnings to show if using GCC ***
-dnl *************************************
-
-AC_ARG_ENABLE(more-warnings,
-	      AS_HELP_STRING([--disable-more-warnings], [Inhibit compiler warnings]),
-	      set_more_warnings=no)
-
-if test "$GCC" = "yes" -a "$set_more_warnings" != "no"; then
-	CFLAGS="$CFLAGS \
-		-Wall -Wstrict-prototypes -Wmissing-declarations \
-		-Wmissing-prototypes -Wnested-externs -Wpointer-arith \
-		-Wdeclaration-after-statement -Wformat=2 -Winit-self \
-		-Waggregate-return -Wmissing-format-attribute"
-
-	for option in -Wmissing-include-dirs -Wundef; do
-		SAVE_CFLAGS="$CFLAGS"
-		CFLAGS="$CFLAGS $option"
-		AC_MSG_CHECKING([whether gcc understands $option])
-		AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],
-				  [has_option=yes],
-				  [has_option=no])
-		AC_MSG_RESULT($has_option)
-		if test $has_option = no; then
-			CFLAGS="$SAVE_CFLAGS"
-		fi
-	done
-fi
 
 AC_MSG_CHECKING([for glib-networking (glib TLS implementation)])
 save_CFLAGS="$CFLAGS"
@@ -366,6 +317,24 @@ if test "$ntlm_auth" != "no"; then
 fi
 AC_SUBST(ntlm_auth)
 AC_DEFINE_UNQUOTED(NTLM_AUTH, "$ntlm_auth", [Samba's 'winbind' daemon helper 'ntlm_auth' which can be used for NTLM single-sign-on])
+
+dnl ****************************************************
+dnl *** Warnings to show if using GCC                ***
+dnl *** (do this last so -Werror won't mess up tests ***
+dnl ****************************************************
+
+AC_ARG_ENABLE(more-warnings,
+	      AS_HELP_STRING([--disable-more-warnings], [Inhibit compiler warnings]),
+	      set_more_warnings=no)
+
+if test "$GCC" = "yes" -a "$set_more_warnings" != "no"; then
+	CFLAGS="$CFLAGS \
+		-Wall -Wstrict-prototypes -Werror=missing-prototypes \
+		-Werror=implicit-function-declaration \
+		-Werror=pointer-arith -Werror=init-self -Werror=format=2 \
+		-Werror=missing-include-dirs -Werror=aggregate-return \
+		-Werror=declaration-after-statement"
+fi
 
 dnl *************************
 dnl *** Output Everything ***

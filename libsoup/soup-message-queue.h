@@ -39,13 +39,15 @@ struct _SoupMessageQueueItem {
 	SoupMessage *msg;
 	SoupSessionCallback callback;
 	gpointer callback_data;
+	GMainContext *async_context;
 
 	GCancellable *cancellable;
 	SoupAddress *proxy_addr;
 	SoupURI *proxy_uri;
 	SoupConnection *conn;
 
-	guint redirection_count;
+	guint paused            : 1;
+	guint redirection_count : 31;
 
 	SoupMessageQueueItemState state;
 
@@ -72,11 +74,12 @@ SoupMessageQueueItem *soup_message_queue_next       (SoupMessageQueue     *queue
 void                  soup_message_queue_remove     (SoupMessageQueue     *queue,
 						     SoupMessageQueueItem *item);
 
-void                  soup_message_queue_item_ref   (SoupMessageQueueItem *item);
-void                  soup_message_queue_item_unref (SoupMessageQueueItem *item);
-
 void                  soup_message_queue_destroy    (SoupMessageQueue     *queue);
 
+void soup_message_queue_item_ref            (SoupMessageQueueItem *item);
+void soup_message_queue_item_unref          (SoupMessageQueueItem *item);
+void soup_message_queue_item_set_connection (SoupMessageQueueItem *item,
+					     SoupConnection       *conn);
 
 G_END_DECLS
 

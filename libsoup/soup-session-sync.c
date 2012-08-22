@@ -48,8 +48,8 @@
  **/
 
 typedef struct {
-	GMutex *lock;
-	GCond *cond;
+	GMutex lock;
+	GCond cond;
 } SoupSessionSyncPrivate;
 #define SOUP_SESSION_SYNC_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SESSION_SYNC, SoupSessionSyncPrivate))
 
@@ -61,6 +61,7 @@ static void  cancel_message (SoupSession *session, SoupMessage *msg,
 static void  auth_required  (SoupSession *session, SoupMessage *msg,
 			     SoupAuth *auth, gboolean retrying);
 static void  flush_queue    (SoupSession *session);
+static void  kick           (SoupSession *session);
 
 G_DEFINE_TYPE (SoupSessionSync, soup_session_sync, SOUP_TYPE_SESSION)
 
@@ -69,8 +70,8 @@ soup_session_sync_init (SoupSessionSync *ss)
 {
 	SoupSessionSyncPrivate *priv = SOUP_SESSION_SYNC_GET_PRIVATE (ss);
 
-	priv->lock = g_mutex_new ();
-	priv->cond = g_cond_new ();
+	g_mutex_init (&priv->lock);
+	g_cond_init (&priv->cond);
 }
 
 static void
@@ -78,8 +79,8 @@ finalize (GObject *object)
 {
 	SoupSessionSyncPrivate *priv = SOUP_SESSION_SYNC_GET_PRIVATE (object);
 
-	g_mutex_free (priv->lock);
-	g_cond_free (priv->cond);
+	g_mutex_clear (&priv->lock);
+	g_cond_clear (&priv->cond);
 
 	G_OBJECT_CLASS (soup_session_sync_parent_class)->finalize (object);
 }
@@ -98,6 +99,7 @@ soup_session_sync_class_init (SoupSessionSyncClass *session_sync_class)
 	session_class->cancel_message = cancel_message;
 	session_class->auth_required = auth_required;
 	session_class->flush_queue = flush_queue;
+	session_class->kick = kick;
 
 	object_class->finalize = finalize;
 }
@@ -153,9 +155,9 @@ tunnel_connect (SoupSession *session, SoupMessageQueueItem *related)
 		soup_session_send_queue_item (session, item, NULL);
 		status = item->msg->status_code;
 		if (item->state == SOUP_MESSAGE_RESTARTING &&
-		    soup_connection_get_state (conn) != SOUP_CONNECTION_DISCONNECTED) {
-			item->state = SOUP_MESSAGE_STARTING;
+		    soup_message_io_in_progress (item->msg)) {
 			soup_message_restarted (item->msg);
+			item->state = SOUP_MESSAGE_RUNNING;
 		} else {
 			if (item->state == SOUP_MESSAGE_RESTARTING)
 				status = SOUP_STATUS_TRY_AGAIN;
@@ -169,6 +171,7 @@ tunnel_connect (SoupSession *session, SoupMessageQueueItem *related)
 	if (SOUP_STATUS_IS_SUCCESSFUL (status)) {
 		if (!soup_connection_start_ssl_sync (conn, related->cancellable))
 			status = SOUP_STATUS_SSL_FAILED;
+		soup_message_set_https_status (related->msg, conn);
 	}
 
 	if (!SOUP_STATUS_IS_SUCCESSFUL (status))
@@ -206,18 +209,18 @@ try_again:
 	status = soup_connection_connect_sync (item->conn, item->cancellable);
 	if (status == SOUP_STATUS_TRY_AGAIN) {
 		soup_connection_disconnect (item->conn);
-		g_object_unref (item->conn);
-		item->conn = NULL;
+		soup_message_queue_item_set_connection (item, NULL);
 		goto try_again;
 	}
+
+	soup_message_set_https_status (msg, item->conn);
 
 	if (!SOUP_STATUS_IS_SUCCESSFUL (status)) {
 		if (!msg->status_code)
 			soup_session_set_item_status (session, item, status);
 		item->state = SOUP_MESSAGE_FINISHING;
 		soup_connection_disconnect (item->conn);
-		g_object_unref (item->conn);
-		item->conn = NULL;
+		soup_message_queue_item_set_connection (item, NULL);
 		return;
 	}
 
@@ -225,8 +228,7 @@ try_again:
 		status = tunnel_connect (session, item);
 		if (!SOUP_STATUS_IS_SUCCESSFUL (status)) {
 			soup_connection_disconnect (item->conn);
-			g_object_unref (item->conn);
-			item->conn = NULL;
+			soup_message_queue_item_set_connection (item, NULL);
 			if (status == SOUP_STATUS_TRY_AGAIN)
 				goto try_again;
 			soup_session_set_item_status (session, item, status);
@@ -249,6 +251,13 @@ process_queue_item (SoupMessageQueueItem *item)
 
 	item->state = SOUP_MESSAGE_STARTING;
 	do {
+		if (item->paused) {
+			g_mutex_lock (&priv->lock);
+			while (item->paused)
+				g_cond_wait (&priv->cond, &priv->lock);
+			g_mutex_unlock (&priv->lock);
+		}
+
 		switch (item->state) {
 		case SOUP_MESSAGE_STARTING:
 			proxy_resolver = (SoupProxyURIResolver *)soup_session_get_feature_for_message (session, SOUP_TYPE_PROXY_URI_RESOLVER, msg);
@@ -283,13 +292,13 @@ process_queue_item (SoupMessageQueueItem *item)
 			break;
 
 		case SOUP_MESSAGE_AWAITING_CONNECTION:
-			g_mutex_lock (priv->lock);
+			g_mutex_lock (&priv->lock);
 			do {
 				get_connection (item);
 				if (item->state == SOUP_MESSAGE_AWAITING_CONNECTION)
-					g_cond_wait (priv->cond, priv->lock);
+					g_cond_wait (&priv->cond, &priv->lock);
 			} while (item->state == SOUP_MESSAGE_AWAITING_CONNECTION);
-			g_mutex_unlock (priv->lock);
+			g_mutex_unlock (&priv->lock);
 			break;
 
 		case SOUP_MESSAGE_READY:
@@ -308,7 +317,7 @@ process_queue_item (SoupMessageQueueItem *item)
 			item->state = SOUP_MESSAGE_FINISHED;
 			soup_message_finished (item->msg);
 			soup_session_unqueue_item (session, item);
-			g_cond_broadcast (priv->cond);
+			g_cond_broadcast (&priv->cond);
 			break;
 
 		default:
@@ -354,6 +363,7 @@ queue_message (SoupSession *session, SoupMessage *msg,
 	       SoupSessionCallback callback, gpointer user_data)
 {
 	SoupMessageQueueItem *item;
+	GThread *thread;
 
 	SOUP_SESSION_CLASS (soup_session_sync_parent_class)->
 		queue_message (g_object_ref (session), msg, callback, user_data);
@@ -361,7 +371,9 @@ queue_message (SoupSession *session, SoupMessage *msg,
 	item = soup_message_queue_lookup (soup_session_get_queue (session), msg);
 	g_return_if_fail (item != NULL);
 
-	g_thread_create (queue_message_thread, item, FALSE, NULL);
+	thread = g_thread_new ("SoupSessionSync:queue_message",
+			       queue_message_thread, item);
+	g_thread_unref (thread);
 }
 
 static guint
@@ -386,10 +398,10 @@ cancel_message (SoupSession *session, SoupMessage *msg, guint status_code)
 {
 	SoupSessionSyncPrivate *priv = SOUP_SESSION_SYNC_GET_PRIVATE (session);
 
-	g_mutex_lock (priv->lock);
+	g_mutex_lock (&priv->lock);
 	SOUP_SESSION_CLASS (soup_session_sync_parent_class)->cancel_message (session, msg, status_code);
-	g_cond_broadcast (priv->cond);
-	g_mutex_unlock (priv->lock);
+	g_cond_broadcast (&priv->cond);
+	g_mutex_unlock (&priv->lock);
 }
 
 static void
@@ -437,7 +449,7 @@ flush_queue (SoupSession *session)
 	 * try to cancel those requests as well, since we'd likely
 	 * just end up looping forever.)
 	 */
-	g_mutex_lock (priv->lock);
+	g_mutex_lock (&priv->lock);
 	do {
 		done = TRUE;
 		for (item = soup_message_queue_first (queue);
@@ -448,9 +460,19 @@ flush_queue (SoupSession *session)
 		}
 
 		if (!done)
-			g_cond_wait (priv->cond, priv->lock);
+			g_cond_wait (&priv->cond, &priv->lock);
 	} while (!done);
-	g_mutex_unlock (priv->lock);
+	g_mutex_unlock (&priv->lock);
 
 	g_hash_table_destroy (current);
+}
+
+static void
+kick (SoupSession *session)
+{
+	SoupSessionSyncPrivate *priv = SOUP_SESSION_SYNC_GET_PRIVATE (session);
+
+	g_mutex_lock (&priv->lock);
+	g_cond_broadcast (&priv->cond);
+	g_mutex_unlock (&priv->lock);
 }

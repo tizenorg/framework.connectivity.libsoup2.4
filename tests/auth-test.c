@@ -304,6 +304,111 @@ bug271540_finished (SoupSession *session, SoupMessage *msg, gpointer data)
 }
 
 static void
+do_pipelined_auth_test (const char *base_uri)
+{
+	SoupSession *session;
+	SoupMessage *msg;
+	gboolean authenticated;
+	char *uri;
+	int i;
+
+	debug_printf (1, "Testing pipelined auth (bug 271540):\n");
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+
+	authenticated = FALSE;
+	g_signal_connect (session, "authenticate",
+			  G_CALLBACK (bug271540_authenticate), &authenticated);
+
+	uri = g_strconcat (base_uri, "Basic/realm1/", NULL);
+	for (i = 0; i < 10; i++) {
+		msg = soup_message_new (SOUP_METHOD_GET, uri);
+		g_object_set_data (G_OBJECT (msg), "#", GINT_TO_POINTER (i + 1));
+		g_signal_connect (msg, "wrote_headers",
+				  G_CALLBACK (bug271540_sent), &authenticated);
+
+		soup_session_queue_message (session, msg,
+					    bug271540_finished, &i);
+	}
+	g_free (uri);
+
+	loop = g_main_loop_new (NULL, TRUE);
+	g_main_loop_run (loop);
+	g_main_loop_unref (loop);
+
+	soup_test_session_abort_unref (session);
+}
+
+/* We test two different things here:
+ *
+ *   1. If we get a 401 response with "WWW-Authenticate: Digest
+ *      stale=true...", we should retry and succeed *without* the
+ *      session asking for a password again.
+ *
+ *   2. If we get a successful response with "Authentication-Info:
+ *      nextnonce=...", we should update the nonce automatically so as
+ *      to avoid getting a stale nonce error on the next request.
+ *
+ * In our Apache config, /Digest/realm1 and /Digest/realm1/expire are
+ * set up to use the same auth info, but only the latter has an
+ * AuthDigestNonceLifetime (of 2 seconds). The way nonces work in
+ * Apache, a nonce received from /Digest/realm1 will still expire in
+ * /Digest/realm1/expire, but it won't issue a nextnonce for a request
+ * in /Digest/realm1. This lets us test both behaviors.
+ *
+ * The expected conversation is:
+ *
+ * First message
+ *   GET /Digest/realm1
+ *
+ *   401 Unauthorized
+ *   WWW-Authenticate: Digest nonce=A
+ *
+ *   [emit 'authenticate']
+ *
+ *   GET /Digest/realm1
+ *   Authorization: Digest nonce=A
+ *
+ *   200 OK
+ *   [No Authentication-Info]
+ *
+ * [sleep 2 seconds: nonce A is no longer valid, but we have no
+ * way of knowing that]
+ *
+ * Second message
+ *   GET /Digest/realm1/expire/
+ *   Authorization: Digest nonce=A
+ *
+ *   401 Unauthorized
+ *   WWW-Authenticate: Digest stale=true nonce=B
+ *
+ *   GET /Digest/realm1/expire/
+ *   Authorization: Digest nonce=B
+ *
+ *   200 OK
+ *   Authentication-Info: nextnonce=C
+ *
+ * [sleep 1 second]
+ *
+ * Third message
+ *   GET /Digest/realm1/expire/
+ *   Authorization: Digest nonce=C
+ *   [nonce=B would work here too]
+ *
+ *   200 OK
+ *   Authentication-Info: nextnonce=D
+ *
+ * [sleep 1 second; nonces B and C are no longer valid, but D is]
+ *
+ * Fourth message
+ *   GET /Digest/realm1/expire/
+ *   Authorization: Digest nonce=D
+ *
+ *   200 OK
+ *   Authentication-Info: nextnonce=D
+ *
+ */
+
+static void
 digest_nonce_authenticate (SoupSession *session, SoupMessage *msg,
 			   SoupAuth *auth, gboolean retrying, gpointer data)
 {
@@ -357,6 +462,31 @@ do_digest_nonce_test (SoupSession *session,
 	if (errors == 0)
 		debug_printf (1, "  %s request succeeded\n", nth);
 	g_object_unref (msg);
+}
+
+static void
+do_digest_expiration_test (const char *base_uri)
+{
+	SoupSession *session;
+	char *uri;
+
+	debug_printf (1, "\nTesting digest nonce expiration:\n");
+
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+
+	uri = g_strconcat (base_uri, "Digest/realm1/", NULL);
+	do_digest_nonce_test (session, "First", uri, TRUE, TRUE);
+	g_free (uri);
+	sleep (2);
+	uri = g_strconcat (base_uri, "Digest/realm1/expire/", NULL);
+	do_digest_nonce_test (session, "Second", uri, TRUE, FALSE);
+	sleep (1);
+	do_digest_nonce_test (session, "Third", uri, FALSE, FALSE);
+	sleep (1);
+	do_digest_nonce_test (session, "Fourth", uri, FALSE, FALSE);
+	g_free (uri);
+
+	soup_test_session_abort_unref (session);
 }
 
 /* Async auth test. We queue three requests to /Basic/realm1, ensuring
@@ -450,6 +580,7 @@ do_async_auth_test (const char *base_uri)
 
 	debug_printf (1, "\nTesting async auth:\n");
 
+	loop = g_main_loop_new (NULL, TRUE);
 	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
 	remaining = 0;
 
@@ -615,6 +746,7 @@ do_async_auth_test (const char *base_uri)
 	g_object_unref (msg1);
 
 	g_free (uri);
+	g_main_loop_unref (loop);
 }
 
 typedef struct {
@@ -853,6 +985,102 @@ do_select_auth_test (void)
 	soup_test_server_quit_unref (server);
 }
 
+static void
+sneakily_close_connection (SoupMessage *msg, gpointer user_data)
+{
+	/* Sneakily close the connection after the response, by
+	 * tricking soup-message-io into thinking that had been
+	 * the plan all along.
+	 */
+	soup_message_headers_append (msg->response_headers,
+				     "Connection", "close");
+}
+
+static void
+auth_close_request_started (SoupServer *server, SoupMessage *msg,
+			    SoupClientContext *client, gpointer user_data)
+{
+	g_signal_connect (msg, "wrote-headers",
+			  G_CALLBACK (sneakily_close_connection), NULL);
+}
+
+typedef struct {
+	SoupSession *session;
+	SoupMessage *msg;
+	SoupAuth *auth;
+} AuthCloseData;
+
+static gboolean
+auth_close_idle_authenticate (gpointer user_data)
+{
+	AuthCloseData *acd = user_data;
+
+	soup_auth_authenticate (acd->auth, "user", "good-basic");
+	soup_session_unpause_message (acd->session, acd->msg);
+
+	g_object_unref (acd->auth);
+	return FALSE;
+}
+
+static void
+auth_close_authenticate (SoupSession *session, SoupMessage *msg,
+			 SoupAuth *auth, gboolean retrying, gpointer data)
+{
+	AuthCloseData *acd = data;
+
+	soup_session_pause_message (session, msg);
+	acd->auth = g_object_ref (auth);
+	g_idle_add (auth_close_idle_authenticate, acd);
+}
+
+static void
+do_auth_close_test (void)
+{
+	SoupServer *server;
+	SoupAuthDomain *basic_auth_domain;
+	SoupURI *uri;
+	AuthCloseData acd;
+
+	debug_printf (1, "\nTesting auth when server times out connection:\n");
+
+	server = soup_test_server_new (FALSE);
+	soup_server_add_handler (server, NULL,
+				 server_callback, NULL, NULL);
+
+	uri = soup_uri_new ("http://127.0.0.1/close");
+	soup_uri_set_port (uri, soup_server_get_port (server));
+
+	basic_auth_domain = soup_auth_domain_basic_new (
+		SOUP_AUTH_DOMAIN_REALM, "auth-test",
+		SOUP_AUTH_DOMAIN_ADD_PATH, "/",
+		SOUP_AUTH_DOMAIN_BASIC_AUTH_CALLBACK, server_basic_auth_callback,
+		NULL);
+	soup_server_add_auth_domain (server, basic_auth_domain);
+	g_object_unref (basic_auth_domain);
+
+	g_signal_connect (server, "request-started",
+			  G_CALLBACK (auth_close_request_started), NULL);
+
+	acd.session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+	g_signal_connect (acd.session, "authenticate",
+			  G_CALLBACK (auth_close_authenticate), &acd);
+
+	acd.msg = soup_message_new_from_uri ("GET", uri);
+	soup_uri_free (uri);
+	soup_session_send_message (acd.session, acd.msg);
+
+	if (acd.msg->status_code != SOUP_STATUS_OK) {
+		debug_printf (1, "    Final status wrong: expected %u, got %u %s\n",
+			      SOUP_STATUS_OK, acd.msg->status_code,
+			      acd.msg->reason_phrase);
+		errors++;
+	}
+
+	g_object_unref (acd.msg);
+	soup_test_session_abort_unref (acd.session);
+	soup_test_server_quit_unref (server);
+}
+
 static SoupAuthTest relogin_tests[] = {
 	{ "Auth provided via URL, should succeed",
 	  "Basic/realm12/", "1", TRUE, "01", SOUP_STATUS_OK },
@@ -954,12 +1182,8 @@ do_batch_tests (const gchar *base_uri_str, gint ntests)
 int
 main (int argc, char **argv)
 {
-	SoupSession *session;
-	SoupMessage *msg;
 	const char *base_uri;
-	char *uri;
-	gboolean authenticated;
-	int i, ntests;
+	int ntests;
 
 	test_init (argc, argv, NULL);
 	apache_init ();
@@ -976,130 +1200,12 @@ main (int argc, char **argv)
 	ntests = G_N_ELEMENTS (relogin_tests);
 	do_batch_tests (base_uri, ntests);
 
-	/* And now for some regression tests */
-	loop = g_main_loop_new (NULL, TRUE);
-
-	debug_printf (1, "Testing pipelined auth (bug 271540):\n");
-	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
-
-	authenticated = FALSE;
-	g_signal_connect (session, "authenticate",
-			  G_CALLBACK (bug271540_authenticate), &authenticated);
-
-	uri = g_strconcat (base_uri, "Basic/realm1/", NULL);
-	for (i = 0; i < 10; i++) {
-		msg = soup_message_new (SOUP_METHOD_GET, uri);
-		g_object_set_data (G_OBJECT (msg), "#", GINT_TO_POINTER (i + 1));
-		g_signal_connect (msg, "wrote_headers",
-				  G_CALLBACK (bug271540_sent), &authenticated);
-
-		soup_session_queue_message (session, msg,
-					    bug271540_finished, &i);
-	}
-	g_free (uri);
-
-	g_main_loop_run (loop);
-	soup_test_session_abort_unref (session);
-
-	debug_printf (1, "\nTesting digest nonce expiration:\n");
-
-	/* We test two different things here:
-	 *
-	 *   1. If we get a 401 response with
-	 *      "WWW-Authenticate: Digest stale=true...", we should
-	 *      retry and succeed *without* the session asking for a
-	 *      password again.
-	 *
-	 *   2. If we get a successful response with
-	 *      "Authentication-Info: nextnonce=...", we should update
-	 *      the nonce automatically so as to avoid getting a
-	 *      stale nonce error on the next request.
-	 *
-	 * In our Apache config, /Digest/realm1 and
-	 * /Digest/realm1/expire are set up to use the same auth info,
-	 * but only the latter has an AuthDigestNonceLifetime (of 2
-	 * seconds). The way nonces work in Apache, a nonce received
-	 * from /Digest/realm1 will still expire in
-	 * /Digest/realm1/expire, but it won't issue a nextnonce for a
-	 * request in /Digest/realm1. This lets us test both
-	 * behaviors.
-	 *
-	 * The expected conversation is:
-	 *
-	 * First message
-	 *   GET /Digest/realm1
-	 *
-	 *   401 Unauthorized
-	 *   WWW-Authenticate: Digest nonce=A
-	 *
-	 *   [emit 'authenticate']
-	 *
-	 *   GET /Digest/realm1
-	 *   Authorization: Digest nonce=A
-	 *
-	 *   200 OK
-	 *   [No Authentication-Info]
-	 *
-	 * [sleep 2 seconds: nonce A is no longer valid, but we have no
-	 * way of knowing that]
-	 *
-	 * Second message
-	 *   GET /Digest/realm1/expire/
-	 *   Authorization: Digest nonce=A
-	 *
-	 *   401 Unauthorized
-	 *   WWW-Authenticate: Digest stale=true nonce=B
-	 *
-	 *   GET /Digest/realm1/expire/
-	 *   Authorization: Digest nonce=B
-	 *
-	 *   200 OK
-	 *   Authentication-Info: nextnonce=C
-	 *
-	 * [sleep 1 second]
-	 *
-	 * Third message
-	 *   GET /Digest/realm1/expire/
-	 *   Authorization: Digest nonce=C
-	 *   [nonce=B would work here too]
-	 *
-	 *   200 OK
-	 *   Authentication-Info: nextnonce=D
-	 *
-	 * [sleep 1 second; nonces B and C are no longer valid, but D is]
-	 *
-	 * Fourth message
-	 *   GET /Digest/realm1/expire/
-	 *   Authorization: Digest nonce=D
-	 *
-	 *   200 OK
-	 *   Authentication-Info: nextnonce=D
-	 *
-	 */
-
-	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
-
-	uri = g_strconcat (base_uri, "Digest/realm1/", NULL);
-	do_digest_nonce_test (session, "First", uri, TRUE, TRUE);
-	g_free (uri);
-	sleep (2);
-	uri = g_strconcat (base_uri, "Digest/realm1/expire/", NULL);
-	do_digest_nonce_test (session, "Second", uri, TRUE, FALSE);
-	sleep (1);
-	do_digest_nonce_test (session, "Third", uri, FALSE, FALSE);
-	sleep (1);
-	do_digest_nonce_test (session, "Fourth", uri, FALSE, FALSE);
-	g_free (uri);
-
-	soup_test_session_abort_unref (session);
-
-	/* Async auth */
+	/* Other regression tests */
+	do_pipelined_auth_test (base_uri);
+	do_digest_expiration_test (base_uri);
 	do_async_auth_test (base_uri);
-
-	/* Selecting correct auth when multiple auth types are available */
 	do_select_auth_test ();
-
-	g_main_loop_unref (loop);
+	do_auth_close_test ();
 
 	test_cleanup ();
 	return errors != 0;

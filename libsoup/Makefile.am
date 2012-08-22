@@ -1,5 +1,7 @@
 ## Process this file with automake to produce Makefile.in
 
+include $(GLIB_MAKEFILE)
+
 if OS_WIN32
 LIBWS2_32 = -lws2_32
 endif
@@ -13,35 +15,6 @@ INCLUDES = 				\
 	$(XML_CFLAGS)			\
 	$(SQLITE_CFLAGS)		\
 	$(GNOME_KEYRING_CFLAGS)
-
-MARSHAL_GENERATED = soup-marshal.c soup-marshal.h
-MKENUMS_GENERATED = soup-enum-types.c soup-enum-types.h
-
-soup-marshal.h: soup-marshal.list
-	$(AM_V_GEN) ( $(GLIB_GENMARSHAL) --prefix=soup_marshal $(srcdir)/soup-marshal.list --header > soup-marshal.tmp \
-	&& mv soup-marshal.tmp soup-marshal.h ) \
-	|| ( rm -f soup-marshal.tmp && exit 1 )
-
-soup-marshal.c: soup-marshal.h
-	$(AM_V_GEN) ( (echo '#include "soup-marshal.h"'; $(GLIB_GENMARSHAL) --prefix=soup_marshal $(srcdir)/soup-marshal.list --body) > soup-marshal.tmp \
-	&& mv soup-marshal.tmp soup-marshal.c ) \
-	|| ( rm -f soup-marshal.tmp && exit 1 )
-
-soup-enum-types.h: $(soup_headers)
-	$(AM_V_GEN) ( cd $(srcdir) && $(GLIB_MKENUMS) --template soup-enum-types.h.tmpl \
-		$(soup_headers) ) > soup-enum-types.h.tmp \
-	&& mv soup-enum-types.h.tmp soup-enum-types.h \
-	|| rm -f soup-enum-type.h.tmp
-
-soup-enum-types.c: $(libsoupinclude_HEADERS)
-	$(AM_V_GEN) ( cd $(srcdir) && $(GLIB_MKENUMS) --template soup-enum-types.c.tmpl \
-		$(soup_headers) ) > soup-enum-types.c.tmp \
-	&& mv soup-enum-types.c.tmp soup-enum-types.c \
-	|| rm -f soup-enum-type.c.tmp
-
-BUILT_SOURCES = $(MARSHAL_GENERATED) $(MKENUMS_GENERATED)
-
-CLEANFILES = $(MARSHAL_GENERATED) $(MKENUMS_GENERATED)
 
 libsoupincludedir = $(includedir)/libsoup-2.4/libsoup
 
@@ -90,11 +63,6 @@ soup_headers =			\
 	soup-value-utils.h	\
 	soup-xmlrpc.h
 
-if SQLLITE_SUPPORT
-soup_headers +=                 \
-	soup-cookie-jar-sqlite.h
-endif
-
 libsoupinclude_HEADERS =	\
 	$(soup_headers)		\
 	soup-enum-types.h
@@ -110,13 +78,7 @@ libsoup_2_4_la_LIBADD =			\
 	-lz				\
 	$(LIBWS2_32)
 
-if SQLLITE_SUPPORT
-libsoup_2_4_la_LIBADD +=                \
-	$(SQLITE_LIBS)
-endif
-
 libsoup_2_4_la_SOURCES =		\
-	$(BUILT_SOURCES)		\
 	soup-address.c			\
 	soup-auth.c			\
 	soup-auth-basic.h		\
@@ -144,11 +106,15 @@ libsoup_2_4_la_SOURCES =		\
 	soup-date.c			\
 	soup-directory-input-stream.h	\
 	soup-directory-input-stream.c	\
+	soup-enum-types.h		\
+	soup-enum-types.c		\
 	soup-form.c			\
 	soup-headers.c			\
 	soup-http-input-stream.h	\
 	soup-http-input-stream.c	\
 	soup-logger.c			\
+	soup-marshal.h			\
+	soup-marshal.c			\
 	soup-message.c			\
 	soup-message-body.c		\
 	soup-message-client-io.c	\
@@ -182,17 +148,10 @@ libsoup_2_4_la_SOURCES =		\
 	soup-session-private.h		\
 	soup-session-sync.c		\
 	soup-socket.c			\
-	soup-ssl.h			\
-	soup-ssl.c	     		\
 	soup-status.c			\
 	soup-uri.c			\
 	soup-value-utils.c		\
 	soup-xmlrpc.c
-
-if SQLLITE_SUPPORT
-libsoup_2_4_la_SOURCES +=               \
-	soup-cookie-jar-sqlite.c
-endif
 
 if BUILD_LIBSOUP_GNOME
 
@@ -229,6 +188,14 @@ libsoup_gnome_2_4_la_SOURCES =		\
 	$(soup_password_manager_gnome_files)
 
 endif
+
+GLIB_GENERATED = soup-marshal.c soup-marshal.h
+GLIB_GENERATED += soup-enum-types.c soup-enum-types.h
+BUILT_SOURCES = $(GLIB_GENERATED)
+
+soup_marshal_sources = $(libsoup_2_4_la_SOURCES) $(libsoup_gnome_2_4_la_SOURCES)
+soup_enum_types_sources = $(libsoupinclude_HEADERS) $(libsoupgnomeinclude_HEADERS)
+soup_enum_types_MKENUMS_C_FLAGS = --fhead "\#define LIBSOUP_USE_UNSTABLE_REQUEST_API"
 
 #
 # Introspection support
@@ -288,11 +255,6 @@ gir_DATA = $(INTROSPECTION_GIRS)
 typelibdir = $(libdir)/girepository-1.0
 typelib_DATA = $(INTROSPECTION_GIRS:.gir=.typelib)
 
-CLEANFILES += $(gir_DATA) $(typelib_DATA)
+CLEANFILES = $(gir_DATA) $(typelib_DATA)
 
 endif
-
-EXTRA_DIST=				\
-	soup-marshal.list		\
-	soup-enum-types.h.tmpl		\
-	soup-enum-types.c.tmpl

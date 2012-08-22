@@ -27,13 +27,11 @@
 #include <gio/gio.h>
 
 #include "soup-http-input-stream.h"
+#include "soup-headers.h"
+#include "soup-content-sniffer.h"
 #include "soup-session.h"
 
-static void soup_http_input_stream_seekable_iface_init (GSeekableIface *seekable_iface);
-
-G_DEFINE_TYPE_WITH_CODE (SoupHTTPInputStream, soup_http_input_stream, G_TYPE_INPUT_STREAM,
-			 G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
-						soup_http_input_stream_seekable_iface_init))
+G_DEFINE_TYPE (SoupHTTPInputStream, soup_http_input_stream, G_TYPE_INPUT_STREAM)
 
 typedef void (*SoupHTTPInputStreamCallback)(GInputStream *);
 
@@ -45,19 +43,20 @@ typedef struct {
 	goffset offset;
 
 	GCancellable *cancellable;
-	GSource *cancel_watch;
+	guint cancel_id;
 	SoupHTTPInputStreamCallback got_headers_cb;
 	SoupHTTPInputStreamCallback got_chunk_cb;
 	SoupHTTPInputStreamCallback finished_cb;
 	SoupHTTPInputStreamCallback cancelled_cb;
 
-	guchar *leftover_buffer;
-	gsize leftover_bufsize, leftover_offset;
+	GQueue *leftover_queue;
 
 	guchar *caller_buffer;
 	gsize caller_bufsize, caller_nread;
 	GAsyncReadyCallback outstanding_callback;
 	GSimpleAsyncResult *result;
+
+	char *sniffed_content_type;
 } SoupHTTPInputStreamPrivate;
 #define SOUP_HTTP_INPUT_STREAM_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_HTTP_INPUT_STREAM, SoupHTTPInputStreamPrivate))
 
@@ -89,23 +88,10 @@ static gboolean soup_http_input_stream_close_finish (GInputStream         *strea
 						     GAsyncResult         *result,
 						     GError              **error);
 
-static goffset  soup_http_input_stream_tell (GSeekable            *seekable);
-
-static gboolean soup_http_input_stream_can_seek (GSeekable            *seekable);
-static gboolean soup_http_input_stream_seek (GSeekable            *seekable,
-					     goffset offset,
-					     GSeekType type,
-					     GCancellable         *cancellable,
-					     GError              **error);
-
-static gboolean soup_http_input_stream_can_truncate (GSeekable            *seekable);
-static gboolean soup_http_input_stream_truncate (GSeekable            *seekable,
-						 goffset offset,
-						 GCancellable         *cancellable,
-						 GError              **error);
-
 static void soup_http_input_stream_got_headers (SoupMessage *msg, gpointer stream);
+static void soup_http_input_stream_content_sniffed (SoupMessage *msg, const char *content_type, GHashTable *params, gpointer stream);
 static void soup_http_input_stream_got_chunk (SoupMessage *msg, SoupBuffer *chunk, gpointer stream);
+static void soup_http_input_stream_restarted (SoupMessage *msg, gpointer stream);
 static void soup_http_input_stream_finished (SoupMessage *msg, gpointer stream);
 
 static void
@@ -117,10 +103,16 @@ soup_http_input_stream_finalize (GObject *object)
 	g_object_unref (priv->session);
 
 	g_signal_handlers_disconnect_by_func (priv->msg, G_CALLBACK (soup_http_input_stream_got_headers), stream);
+	g_signal_handlers_disconnect_by_func (priv->msg, G_CALLBACK (soup_http_input_stream_content_sniffed), stream);
 	g_signal_handlers_disconnect_by_func (priv->msg, G_CALLBACK (soup_http_input_stream_got_chunk), stream);
+	g_signal_handlers_disconnect_by_func (priv->msg, G_CALLBACK (soup_http_input_stream_restarted), stream);
 	g_signal_handlers_disconnect_by_func (priv->msg, G_CALLBACK (soup_http_input_stream_finished), stream);
 	g_object_unref (priv->msg);
-	g_free (priv->leftover_buffer);
+
+	g_queue_foreach (priv->leftover_queue, (GFunc) soup_buffer_free, NULL);
+	g_queue_free (priv->leftover_queue);
+
+	g_free (priv->sniffed_content_type);
 
 	if (G_OBJECT_CLASS (soup_http_input_stream_parent_class)->finalize)
 		(*G_OBJECT_CLASS (soup_http_input_stream_parent_class)->finalize)(object);
@@ -145,19 +137,11 @@ soup_http_input_stream_class_init (SoupHTTPInputStreamClass *klass)
 }
 
 static void
-soup_http_input_stream_seekable_iface_init (GSeekableIface *seekable_iface)
-{
-	seekable_iface->tell = soup_http_input_stream_tell;
-	seekable_iface->can_seek = soup_http_input_stream_can_seek;
-	seekable_iface->seek = soup_http_input_stream_seek;
-	seekable_iface->can_truncate = soup_http_input_stream_can_truncate;
-	seekable_iface->truncate_fn = soup_http_input_stream_truncate;
-}
-
-static void
 soup_http_input_stream_init (SoupHTTPInputStream *stream)
 {
-	;
+	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
+
+	priv->leftover_queue = g_queue_new ();
 }
 
 static void
@@ -166,6 +150,20 @@ soup_http_input_stream_queue_message (SoupHTTPInputStream *stream)
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 
 	priv->got_headers = priv->finished = FALSE;
+
+	if (soup_session_get_feature_for_message (priv->session, SOUP_TYPE_CONTENT_SNIFFER, priv->msg)) {
+		g_signal_connect (priv->msg, "content_sniffed",
+				  G_CALLBACK (soup_http_input_stream_content_sniffed), stream);
+	} else {
+		g_signal_connect (priv->msg, "got_headers",
+				  G_CALLBACK (soup_http_input_stream_got_headers), stream);
+	}
+	g_signal_connect (priv->msg, "got_chunk",
+			  G_CALLBACK (soup_http_input_stream_got_chunk), stream);
+	g_signal_connect (priv->msg, "restarted",
+			  G_CALLBACK (soup_http_input_stream_restarted), stream);
+	g_signal_connect (priv->msg, "finished",
+			  G_CALLBACK (soup_http_input_stream_finished), stream);
 
 	/* Add an extra ref since soup_session_queue_message steals one */
 	g_object_ref (priv->msg);
@@ -198,7 +196,7 @@ soup_http_input_stream_queue_message (SoupHTTPInputStream *stream)
  *
  * Returns: a new #GInputStream.
  **/
-SoupHTTPInputStream *
+GInputStream *
 soup_http_input_stream_new (SoupSession *session, SoupMessage *msg)
 {
 	SoupHTTPInputStream *stream;
@@ -213,15 +211,7 @@ soup_http_input_stream_new (SoupSession *session, SoupMessage *msg)
 	priv->async_context = soup_session_get_async_context (session);
 	priv->msg = g_object_ref (msg);
 
-	g_signal_connect (msg, "got_headers",
-			  G_CALLBACK (soup_http_input_stream_got_headers), stream);
-	g_signal_connect (msg, "got_chunk",
-			  G_CALLBACK (soup_http_input_stream_got_chunk), stream);
-	g_signal_connect (msg, "finished",
-			  G_CALLBACK (soup_http_input_stream_finished), stream);
-
-	soup_http_input_stream_queue_message (stream);
-	return stream;
+	return (GInputStream *)stream;
 }
 
 static void
@@ -229,12 +219,13 @@ soup_http_input_stream_got_headers (SoupMessage *msg, gpointer stream)
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 
-	/* If the status is unsuccessful, we just ignore the signal and let
-	 * libsoup keep going (eventually either it will requeue the request
-	 * (after handling authentication/redirection), or else the
-	 * "finished" handler will run).
+	/* If the message is expected to be restarted then we read the
+	 * whole message first and hope it does get restarted, but
+	 * if it doesn't, then we stream the body belatedly.
 	 */
-	if (!SOUP_STATUS_IS_SUCCESSFUL (msg->status_code))
+	if (msg->status_code == SOUP_STATUS_UNAUTHORIZED ||
+	    msg->status_code == SOUP_STATUS_PROXY_UNAUTHORIZED ||
+	    soup_session_would_redirect (priv->session, msg))
 		return;
 
 	priv->got_headers = TRUE;
@@ -248,25 +239,39 @@ soup_http_input_stream_got_headers (SoupMessage *msg, gpointer stream)
 }
 
 static void
+soup_http_input_stream_content_sniffed (SoupMessage *msg, const char *content_type,
+					GHashTable *params, gpointer stream)
+{
+	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
+	GString *sniffed_type;
+
+	sniffed_type = g_string_new (content_type);
+	if (params) {
+		GHashTableIter iter;
+		gpointer key, value;
+
+		g_hash_table_iter_init (&iter, params);
+		while (g_hash_table_iter_next (&iter, &key, &value)) {
+			g_string_append (sniffed_type, "; ");
+			soup_header_g_string_append_param (sniffed_type, key, value);
+		}
+	}
+	g_free (priv->sniffed_content_type);
+	priv->sniffed_content_type = g_string_free (sniffed_type, FALSE);
+
+	soup_http_input_stream_got_headers (msg, stream);
+}
+
+static void
 soup_http_input_stream_got_chunk (SoupMessage *msg, SoupBuffer *chunk_buffer,
-					 gpointer stream)
+				  gpointer stream)
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 	const gchar *chunk = chunk_buffer->data;
 	gsize chunk_size = chunk_buffer->length;
 
-	/* We only pay attention to the chunk if it's part of a successful
-	 * response.
-	 */
-	if (!SOUP_STATUS_IS_SUCCESSFUL (msg->status_code))
-		return;
-
-	/* Sanity check */
-	if (priv->caller_bufsize == 0 || priv->leftover_bufsize != 0)
-		g_warning ("soup_http_input_stream_got_chunk called again before previous chunk was processed");
-
 	/* Copy what we can into priv->caller_buffer */
-	if (priv->caller_bufsize > priv->caller_nread) {
+	if (priv->caller_bufsize > priv->caller_nread && priv->leftover_queue->length == 0) {
 		gsize nread = MIN (chunk_size, priv->caller_bufsize - priv->caller_nread);
 
 		memcpy (priv->caller_buffer + priv->caller_nread, chunk, nread);
@@ -277,26 +282,33 @@ soup_http_input_stream_got_chunk (SoupMessage *msg, SoupBuffer *chunk_buffer,
 	}
 
 	if (chunk_size > 0) {
-		/* Copy the rest into priv->leftover_buffer. If
-		 * there's already some data there, realloc and
-		 * append. Otherwise just copy.
-		 */
-		if (priv->leftover_bufsize) {
-			priv->leftover_buffer = g_realloc (priv->leftover_buffer,
-							   priv->leftover_bufsize + chunk_size);
-			memcpy (priv->leftover_buffer + priv->leftover_bufsize,
-				chunk, chunk_size);
-			priv->leftover_bufsize += chunk_size;
+		if (priv->leftover_queue->length > 0) {
+			g_queue_push_tail (priv->leftover_queue, soup_buffer_copy (chunk_buffer));
 		} else {
-			priv->leftover_bufsize = chunk_size;
-			priv->leftover_buffer = g_memdup (chunk, chunk_size);
-			priv->leftover_offset = 0;
+			g_queue_push_head (priv->leftover_queue,
+					   soup_buffer_new_subbuffer (chunk_buffer,
+								      chunk_buffer->length - chunk_size,
+								      chunk_size));
 		}
 	}
 
-	soup_session_pause_message (priv->session, msg);
-	if (priv->got_chunk_cb)
-		priv->got_chunk_cb (stream);
+	if (priv->got_headers) {
+		soup_session_pause_message (priv->session, msg);
+		if (priv->got_chunk_cb)
+			priv->got_chunk_cb (stream);
+	}
+}
+
+static void
+soup_http_input_stream_restarted (SoupMessage *msg, gpointer stream)
+{
+	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
+	GList *q;
+
+	/* Throw away any pending read data */
+	for (q = priv->leftover_queue->head; q; q = q->next)
+		soup_buffer_free (q->data);
+	g_queue_clear (priv->leftover_queue);
 }
 
 static void
@@ -304,45 +316,41 @@ soup_http_input_stream_finished (SoupMessage *msg, gpointer stream)
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 
+	priv->got_headers = TRUE;
 	priv->finished = TRUE;
 
 	if (priv->finished_cb)
 		priv->finished_cb (stream);
 }
 
-static gboolean
-soup_http_input_stream_cancelled (GIOChannel *chan, GIOCondition condition,
-					 gpointer stream)
+static void
+soup_http_input_stream_cancelled (GCancellable *cancellable,
+				  gpointer      user_data)
 {
+	SoupHTTPInputStream *stream = user_data;
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 
-	priv->cancel_watch = NULL;
+	g_signal_handler_disconnect (cancellable, priv->cancel_id);
+	priv->cancel_id = 0;
 
 	soup_session_pause_message (priv->session, priv->msg);
 	if (priv->cancelled_cb)
-		priv->cancelled_cb (stream);
-
-	return FALSE;
+		priv->cancelled_cb (G_INPUT_STREAM (stream));
 }
 
 static void
 soup_http_input_stream_prepare_for_io (GInputStream *stream,
 				       GCancellable *cancellable,
 				       guchar       *buffer,
-				       gsize count)
+				       gsize         count)
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
-	int cancel_fd;
 
 	priv->cancellable = cancellable;
-	cancel_fd = g_cancellable_get_fd (cancellable);
-	if (cancel_fd != -1) {
-		GIOChannel *chan = g_io_channel_unix_new (cancel_fd);
-		priv->cancel_watch = soup_add_io_watch (priv->async_context, chan,
-							G_IO_IN | G_IO_ERR | G_IO_HUP,
-							soup_http_input_stream_cancelled,
-							stream);
-		g_io_channel_unref (chan);
+	if (cancellable) {
+		priv->cancel_id = g_signal_connect (cancellable, "cancelled",
+						    G_CALLBACK (soup_http_input_stream_cancelled),
+						    stream);
 	}
 
 	priv->caller_buffer = buffer;
@@ -358,10 +366,9 @@ soup_http_input_stream_done_io (GInputStream *stream)
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 
-	if (priv->cancel_watch) {
-		g_source_destroy (priv->cancel_watch);
-		priv->cancel_watch = NULL;
-		g_cancellable_release_fd (priv->cancellable);
+	if (priv->cancel_id) {
+		g_signal_handler_disconnect (priv->cancellable, priv->cancel_id);
+		priv->cancel_id = 0;
 	}
 	priv->cancellable = NULL;
 
@@ -372,7 +379,7 @@ soup_http_input_stream_done_io (GInputStream *stream)
 static gboolean
 set_error_if_http_failed (SoupMessage *msg, GError **error)
 {
-	if (!SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
+	if (SOUP_STATUS_IS_TRANSPORT_ERROR (msg->status_code)) {
 		g_set_error_literal (error, SOUP_HTTP_ERROR,
 				     msg->status_code, msg->reason_phrase);
 		return TRUE;
@@ -385,19 +392,17 @@ read_from_leftover (SoupHTTPInputStreamPrivate *priv,
 		    gpointer buffer, gsize bufsize)
 {
 	gsize nread;
+	SoupBuffer *soup_buffer = (SoupBuffer *) g_queue_peek_head (priv->leftover_queue);
+	gboolean fits_in_buffer = soup_buffer->length <= bufsize;
 
-	if (priv->leftover_bufsize - priv->leftover_offset <= bufsize) {
-		nread = priv->leftover_bufsize - priv->leftover_offset;
-		memcpy (buffer, priv->leftover_buffer + priv->leftover_offset, nread);
+	nread = fits_in_buffer ? soup_buffer->length : bufsize;
+	memcpy (buffer, soup_buffer->data, nread);
 
-		g_free (priv->leftover_buffer);
-		priv->leftover_buffer = NULL;
-		priv->leftover_bufsize = priv->leftover_offset = 0;
-	} else {
-		nread = bufsize;
-		memcpy (buffer, priv->leftover_buffer + priv->leftover_offset, nread);
-		priv->leftover_offset += nread;
-	}
+	g_queue_pop_head (priv->leftover_queue);
+	if (!fits_in_buffer)
+		g_queue_push_head (priv->leftover_queue,
+				   soup_buffer_new_subbuffer (soup_buffer, nread, soup_buffer->length - nread));
+	soup_buffer_free (soup_buffer);
 
 	priv->offset += nread;
 	return nread;
@@ -431,10 +436,6 @@ static void
 send_sync_finished (GInputStream *stream)
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
-	GError *error = NULL;
-
-	if (!g_cancellable_set_error_if_cancelled (priv->cancellable, &error))
-		set_error_if_http_failed (priv->msg, &error);
 
 	priv->got_headers_cb = NULL;
 	priv->finished_cb = NULL;
@@ -468,6 +469,8 @@ soup_http_input_stream_send (SoupHTTPInputStream  *httpstream,
 
 	g_return_val_if_fail (SOUP_IS_HTTP_INPUT_STREAM (httpstream), FALSE);
 
+	soup_http_input_stream_queue_message (httpstream);
+
 	if (!g_input_stream_set_pending (istream, error))
 		return FALSE;
 
@@ -490,7 +493,7 @@ soup_http_input_stream_read (GInputStream  *stream,
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 
 	/* If there is data leftover from a previous read, return it. */
-	if (priv->leftover_bufsize)
+	if (priv->leftover_queue->length)
 		return read_from_leftover (priv, buffer, count);
 
 	if (priv->finished)
@@ -521,8 +524,10 @@ soup_http_input_stream_close (GInputStream  *stream,
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 
-	if (!priv->finished)
+	if (!priv->finished) {
+		soup_session_unpause_message (priv->session, priv->msg);
 		soup_session_cancel_message (priv->session, priv->msg, SOUP_STATUS_CANCELLED);
+	}
 
 	return TRUE;
 }
@@ -536,7 +541,7 @@ wrapper_callback (GObject *source_object, GAsyncResult *res,
 
 	g_input_stream_clear_pending (stream);
 	if (priv->outstanding_callback)
-		(*priv->outstanding_callback)(source_object, res, user_data);
+		(*priv->outstanding_callback) (source_object, res, user_data);
 	priv->outstanding_callback = NULL;
 	g_object_unref (stream);
 }
@@ -559,10 +564,8 @@ send_async_finished (GInputStream *stream)
 	priv->result = NULL;
 
 	g_simple_async_result_set_op_res_gboolean (result, error == NULL);
-	if (error) {
-		g_simple_async_result_set_from_error (result, error);
-		g_error_free (error);
-	}
+	if (error)
+		g_simple_async_result_take_error (result, error);
 	g_simple_async_result_complete (result);
 	g_object_unref (result);
 }
@@ -615,12 +618,13 @@ soup_http_input_stream_send_async (SoupHTTPInputStream *httpstream,
 
 	g_return_if_fail (SOUP_IS_HTTP_INPUT_STREAM (httpstream));
 
+	soup_http_input_stream_queue_message (httpstream);
+
 	if (!g_input_stream_set_pending (istream, &error)) {
-		g_simple_async_report_gerror_in_idle (G_OBJECT (httpstream),
-						      callback,
-						      user_data,
-						      error);
-		g_error_free (error);
+		g_simple_async_report_take_gerror_in_idle (G_OBJECT (httpstream),
+							   callback,
+							   user_data,
+							   error);
 		return;
 	}
 	soup_http_input_stream_send_async_internal (istream, io_priority, cancellable,
@@ -668,10 +672,9 @@ read_async_done (GInputStream *stream)
 	priv->result = NULL;
 
 	if (g_cancellable_set_error_if_cancelled (priv->cancellable, &error) ||
-	    set_error_if_http_failed (priv->msg, &error)) {
-		g_simple_async_result_set_from_error (result, error);
-		g_error_free (error);
-	} else
+	    set_error_if_http_failed (priv->msg, &error))
+		g_simple_async_result_take_error (result, error);
+	else
 		g_simple_async_result_set_op_res_gssize (result, priv->caller_nread);
 
 	priv->got_chunk_cb = NULL;
@@ -701,7 +704,7 @@ soup_http_input_stream_read_async (GInputStream        *stream,
 					    callback, user_data,
 					    soup_http_input_stream_read_async);
 
-	if (priv->leftover_bufsize) {
+	if (priv->leftover_queue->length) {
 		gsize nread = read_from_leftover (priv, buffer, count);
 		g_simple_async_result_set_op_res_gssize (result, nread);
 		g_simple_async_result_complete_in_idle (result);
@@ -754,10 +757,8 @@ soup_http_input_stream_close_async (GInputStream        *stream,
 					    soup_http_input_stream_close_async);
 	success = soup_http_input_stream_close (stream, cancellable, &error);
 	g_simple_async_result_set_op_res_gboolean (result, success);
-	if (error) {
-		g_simple_async_result_set_from_error (result, error);
-		g_error_free (error);
-	}
+	if (error)
+		g_simple_async_result_take_error (result, error);
 
 	g_simple_async_result_complete_in_idle (result);
 	g_object_unref (result);
@@ -772,100 +773,21 @@ soup_http_input_stream_close_finish (GInputStream  *stream,
 	return TRUE;
 }
 
-static goffset
-soup_http_input_stream_tell (GSeekable *seekable)
-{
-	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (seekable);
-
-	return priv->offset;
-}
-
-static gboolean
-soup_http_input_stream_can_seek (GSeekable *seekable)
-{
-	return TRUE;
-}
-
-extern void soup_message_io_cleanup (SoupMessage *msg);
-
-static gboolean
-soup_http_input_stream_seek (GSeekable     *seekable,
-			     goffset        offset,
-			     GSeekType      type,
-			     GCancellable  *cancellable,
-			     GError       **error)
-{
-	GInputStream *stream = G_INPUT_STREAM (seekable);
-	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (seekable);
-	char *range;
-
-	if (type == G_SEEK_END) {
-		/* FIXME: we could send "bytes=-offset", but unless we
-		 * know the Content-Length, we wouldn't be able to
-		 * answer a tell() properly. We could find the
-		 * Content-Length by doing a HEAD...
-		 */
-
-		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-				     "G_SEEK_END not currently supported");
-		return FALSE;
-	}
-
-	if (!g_input_stream_set_pending (stream, error))
-		return FALSE;
-
-	soup_session_cancel_message (priv->session, priv->msg, SOUP_STATUS_CANCELLED);
-	soup_message_io_cleanup (priv->msg);
-
-	switch (type) {
-		case G_SEEK_CUR:
-			offset += priv->offset;
-		/* fall through */
-
-		case G_SEEK_SET:
-			range = g_strdup_printf ("bytes=%" G_GUINT64_FORMAT "-", (guint64)offset);
-			priv->offset = offset;
-			break;
-
-		case G_SEEK_END:
-			range = NULL; /* keep compilers happy */
-			g_return_val_if_reached (FALSE);
-			break;
-
-		default:
-			g_return_val_if_reached (FALSE);
-	}
-
-	soup_message_headers_remove (priv->msg->request_headers, "Range");
-	soup_message_headers_append (priv->msg->request_headers, "Range", range);
-	g_free (range);
-
-	soup_http_input_stream_queue_message (SOUP_HTTP_INPUT_STREAM (stream));
-
-	g_input_stream_clear_pending (stream);
-	return TRUE;
-}
-
-static gboolean
-soup_http_input_stream_can_truncate (GSeekable *seekable)
-{
-	return FALSE;
-}
-
-static gboolean
-soup_http_input_stream_truncate (GSeekable     *seekable,
-				 goffset        offset,
-				 GCancellable  *cancellable,
-				 GError       **error)
-{
-	g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-			     "Truncate not allowed on input stream");
-	return FALSE;
-}
-
 SoupMessage *
 soup_http_input_stream_get_message (SoupHTTPInputStream *httpstream)
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (httpstream);
 	return priv->msg ? g_object_ref (priv->msg) : NULL;
+}
+
+const char *
+soup_http_input_stream_get_content_type (SoupHTTPInputStream *httpstream)
+{
+	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (httpstream);
+
+	if (priv->sniffed_content_type)
+		return priv->sniffed_content_type;
+	else
+		return soup_message_headers_get_content_type (priv->msg->response_headers, NULL);
+
 }

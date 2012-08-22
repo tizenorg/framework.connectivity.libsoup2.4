@@ -24,7 +24,6 @@
 #include "soup-marshal.h"
 #include "soup-path-map.h" 
 #include "soup-socket.h"
-#include "soup-ssl.h"
 
 /**
  * SECTION:soup-server
@@ -99,7 +98,7 @@ typedef struct {
 	guint              port;
 
 	char              *ssl_cert_file, *ssl_key_file;
-	SoupSSLCredentials *ssl_creds;
+	GTlsCertificate   *ssl_cert;
 
 	char              *server_header;
 
@@ -127,6 +126,7 @@ enum {
 	PROP_INTERFACE,
 	PROP_SSL_CERT_FILE,
 	PROP_SSL_KEY_FILE,
+	PROP_TLS_CERTIFICATE,
 	PROP_ASYNC_CONTEXT,
 	PROP_RAW_PATHS,
 	PROP_SERVER_HEADER,
@@ -141,6 +141,9 @@ static void set_property (GObject *object, guint prop_id,
 			  const GValue *value, GParamSpec *pspec);
 static void get_property (GObject *object, guint prop_id,
 			  GValue *value, GParamSpec *pspec);
+
+static SoupClientContext *soup_client_context_ref (SoupClientContext *client);
+static void soup_client_context_unref (SoupClientContext *client);
 
 static void
 free_handler (SoupServerHandler *hand)
@@ -169,8 +172,8 @@ finalize (GObject *object)
 
 	g_free (priv->ssl_cert_file);
 	g_free (priv->ssl_key_file);
-	if (priv->ssl_creds)
-		soup_ssl_free_server_credentials (priv->ssl_creds);
+	if (priv->ssl_cert)
+		g_object_unref (priv->ssl_cert);
 
 	g_free (priv->server_header);
 
@@ -183,6 +186,13 @@ finalize (GObject *object)
 
 		priv->clients = g_slist_remove (priv->clients, client);
 
+		/* keep a ref on the client context so it doesn't get destroyed
+		 * when we finish the message; the SoupSocket::disconnect
+		 * handler will refer to client->server later when the socket is
+		 * disconnected.
+		 */
+		soup_client_context_ref (client);
+
 		if (client->msg) {
 			soup_message_set_status (client->msg, SOUP_STATUS_IO_ERROR);
 			soup_message_io_finished (client->msg);
@@ -190,6 +200,8 @@ finalize (GObject *object)
 
 		soup_socket_disconnect (sock);
 		g_object_unref (sock);
+
+		soup_client_context_unref (client);
 	}
 
 	if (priv->default_handler)
@@ -247,7 +259,7 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_started),
 			      NULL, NULL,
-			      soup_marshal_NONE__OBJECT_POINTER,
+			      _soup_marshal_NONE__OBJECT_POINTER,
 			      G_TYPE_NONE, 2, 
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
@@ -272,7 +284,7 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_read),
 			      NULL, NULL,
-			      soup_marshal_NONE__OBJECT_POINTER,
+			      _soup_marshal_NONE__OBJECT_POINTER,
 			      G_TYPE_NONE, 2,
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
@@ -292,7 +304,7 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_finished),
 			      NULL, NULL,
-			      soup_marshal_NONE__OBJECT_POINTER,
+			      _soup_marshal_NONE__OBJECT_POINTER,
 			      G_TYPE_NONE, 2,
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
@@ -321,7 +333,7 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_aborted),
 			      NULL, NULL,
-			      soup_marshal_NONE__OBJECT_POINTER,
+			      _soup_marshal_NONE__OBJECT_POINTER,
 			      G_TYPE_NONE, 2,
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
@@ -356,9 +368,18 @@ soup_server_class_init (SoupServerClass *server_class)
 	/**
 	 * SOUP_SERVER_SSL_CERT_FILE:
 	 *
-	 * Alias for the #SoupServer:ssl-cert-file property. (The file
-	 * containing the SSL certificate for the server.)
-	 **/
+	 * Alias for the #SoupServer:ssl-cert-file property, qv.
+	 */
+	/**
+	 * SoupServer:ssl-cert-file:
+	 *
+	 * Path to a file containing a PEM-encoded certificate. If
+	 * this and #SoupServer:ssl-key-file are both set, then the
+	 * server will speak https rather than plain http.
+	 *
+	 * Alternatively, you can use #SoupServer:tls-certificate
+	 * to provide an arbitrary #GTlsCertificate.
+	 */
 	g_object_class_install_property (
 		object_class, PROP_SSL_CERT_FILE,
 		g_param_spec_string (SOUP_SERVER_SSL_CERT_FILE,
@@ -369,15 +390,49 @@ soup_server_class_init (SoupServerClass *server_class)
 	/**
 	 * SOUP_SERVER_SSL_KEY_FILE:
 	 *
-	 * Alias for the #SoupServer:ssl-key-file property. (The file
-	 * containing the SSL certificate key for the server.)
-	 **/
+	 * Alias for the #SoupServer:ssl-key-file property, qv.
+	 */
+	/**
+	 * SoupServer:ssl-key-file:
+	 *
+	 * Path to a file containing a PEM-encoded private key. If
+	 * this and #SoupServer:ssl-key-file are both set, then the
+	 * server will speak https rather than plain http. Note that
+	 * you are allowed to set them to the same value, if you have
+	 * a single file containing both the certificate and the key.
+	 *
+	 * Alternatively, you can use #SoupServer:tls-certificate
+	 * to provide an arbitrary #GTlsCertificate.
+	 */
 	g_object_class_install_property (
 		object_class, PROP_SSL_KEY_FILE,
 		g_param_spec_string (SOUP_SERVER_SSL_KEY_FILE,
 				     "SSL key file",
 				     "File containing server SSL key",
 				     NULL,
+				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+	/**
+	 * SOUP_SERVER_TLS_CERTIFICATE:
+	 *
+	 * Alias for the #SoupServer:tls-certificate property, qv.
+	 */
+	/**
+	 * SoupServer:tls-certificate:
+	 *
+	 * A #GTlsCertificate that has a #GTlsCertificate:private-key
+	 * set. If this is set, then the server will speak https
+	 * rather than plain http.
+	 *
+	 * Alternatively, you can use #SoupServer:ssl-cert-file and
+	 * #SoupServer:ssl-key-file properties, to have #SoupServer
+	 * read in a a certificate from a file.
+	 */
+	g_object_class_install_property (
+		object_class, PROP_TLS_CERTIFICATE,
+		g_param_spec_object (SOUP_SERVER_TLS_CERTIFICATE,
+				     "TLS certificate",
+				     "GTlsCertificate to use for https",
+				     G_TYPE_TLS_CERTIFICATE,
 				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 	/**
 	 * SOUP_SERVER_ASYNC_CONTEXT:
@@ -429,7 +484,7 @@ soup_server_class_init (SoupServerClass *server_class)
 	 * holes.
 	 *
 	 * As with #SoupSession:user_agent, if you set a
-	 * %server_header property that has trailing whitespace,
+	 * #SoupServer:server_header property that has trailing whitespace,
 	 * #SoupServer will append its own product token (eg,
 	 * "<literal>libsoup/2.3.2</literal>") to the end of the
 	 * header for you.
@@ -469,10 +524,15 @@ constructor (GType                  type,
 	}
 
 	if (priv->ssl_cert_file && priv->ssl_key_file) {
-		priv->ssl_creds = soup_ssl_get_server_credentials (
-			priv->ssl_cert_file,
-			priv->ssl_key_file);
-		if (!priv->ssl_creds) {
+		GError *error = NULL;
+
+		if (priv->ssl_cert)
+			g_object_unref (priv->ssl_cert);
+		priv->ssl_cert = g_tls_certificate_new_from_files (priv->ssl_cert_file, priv->ssl_key_file, &error);
+		if (!priv->ssl_cert) {
+			g_warning ("Could not read SSL certificate from '%s': %s",
+				   priv->ssl_cert_file, error->message);
+			g_error_free (error);
 			g_object_unref (server);
 			return NULL;
 		}
@@ -480,7 +540,7 @@ constructor (GType                  type,
 
 	priv->listen_sock =
 		soup_socket_new (SOUP_SOCKET_LOCAL_ADDRESS, priv->iface,
-				 SOUP_SOCKET_SSL_CREDENTIALS, priv->ssl_creds,
+				 SOUP_SOCKET_SSL_CREDENTIALS, priv->ssl_cert,
 				 SOUP_SOCKET_ASYNC_CONTEXT, priv->async_context,
 				 NULL);
 	if (!soup_socket_listen (priv->listen_sock)) {
@@ -524,6 +584,11 @@ set_property (GObject *object, guint prop_id,
 	case PROP_SSL_KEY_FILE:
 		priv->ssl_key_file =
 			g_strdup (g_value_get_string (value));
+		break;
+	case PROP_TLS_CERTIFICATE:
+		if (priv->ssl_cert)
+			g_object_unref (priv->ssl_cert);
+		priv->ssl_cert = g_value_dup_object (value);
 		break;
 	case PROP_ASYNC_CONTEXT:
 		priv->async_context = g_value_get_pointer (value);
@@ -572,6 +637,9 @@ get_property (GObject *object, guint prop_id,
 		break;
 	case PROP_SSL_KEY_FILE:
 		g_value_set_string (value, priv->ssl_key_file);
+		break;
+	case PROP_TLS_CERTIFICATE:
+		g_value_set_object (value, priv->ssl_cert);
 		break;
 	case PROP_ASYNC_CONTEXT:
 		g_value_set_pointer (value, priv->async_context ? g_main_context_ref (priv->async_context) : NULL);
@@ -1206,8 +1274,9 @@ soup_client_context_get_auth_user (SoupClientContext *client)
  * @user_data: the data passed to @soup_server_add_handler
  *
  * A callback used to handle requests to a #SoupServer. The callback
- * will be invoked after receiving the request body; @msg's %method,
- * %request_headers, and %request_body fields will be filled in.
+ * will be invoked after receiving the request body; @msg's
+ * #SoupMessage:method, #SoupMessage:request_headers, and
+ * #SoupMessage:request_body fields will be filled in.
  *
  * @path and @query contain the likewise-named components of the
  * Request-URI, subject to certain assumptions. By default,
@@ -1243,7 +1312,7 @@ soup_client_context_get_auth_user (SoupClientContext *client)
  *
  * To send the response body a bit at a time using "chunked" encoding,
  * first call soup_message_headers_set_encoding() to set
- * %SOUP_ENCODING_CHUNKED on the %response_headers. Then call
+ * %SOUP_ENCODING_CHUNKED on the #SoupMessage:response_headers. Then call
  * soup_message_body_append() (or soup_message_body_append_buffer())
  * to append each chunk as it becomes ready, and
  * soup_server_unpause_message() to make sure it's running. (The

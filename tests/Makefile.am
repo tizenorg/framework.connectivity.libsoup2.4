@@ -1,6 +1,6 @@
 INCLUDES =		\
 	-I$(top_srcdir)	\
-	-DSRCDIR=\""$(srcdir)"\" \
+	-DSRCDIR=\""$(abs_srcdir)"\" \
 	-DLIBSOUP_DISABLE_DEPRECATED \
 	$(SOUP_MAINTAINER_FLAGS) \
 	$(XML_CFLAGS)	\
@@ -14,6 +14,7 @@ LIBS =			\
 noinst_PROGRAMS =	\
 	chunk-test	\
 	coding-test	\
+	connection-test	\
 	context-test	\
 	continue-test	\
 	cookies-test    \
@@ -30,6 +31,7 @@ noinst_PROGRAMS =	\
 	simple-httpd	\
 	simple-proxy	\
 	sniffing-test   \
+	ssl-test	\
 	streaming-test	\
 	timeout-test	\
 	uri-parsing	\
@@ -42,6 +44,7 @@ TEST_SRCS = test-utils.c test-utils.h
 auth_test_SOURCES = auth-test.c $(TEST_SRCS)
 chunk_test_SOURCES = chunk-test.c $(TEST_SRCS)
 coding_test_SOURCES = coding-test.c $(TEST_SRCS)
+connection_test_SOURCES = connection-test.c $(TEST_SRCS)
 context_test_SOURCES = context-test.c $(TEST_SRCS)
 continue_test_SOURCES = continue-test.c $(TEST_SRCS)
 cookies_test_SOURCES = cookies-test.c $(TEST_SRCS)
@@ -65,6 +68,7 @@ server_auth_test_SOURCES = server-auth-test.c $(TEST_SRCS)
 simple_httpd_SOURCES = simple-httpd.c
 simple_proxy_SOURCES = simple-proxy.c
 sniffing_test_SOURCES = sniffing-test.c  $(TEST_SRCS)
+ssl_test_SOURCES = ssl-test.c  $(TEST_SRCS)
 streaming_test_SOURCES = streaming-test.c $(TEST_SRCS)
 timeout_test_SOURCES = timeout-test.c $(TEST_SRCS)
 uri_parsing_SOURCES = uri-parsing.c $(TEST_SRCS)
@@ -84,6 +88,7 @@ endif
 TESTS =			\
 	chunk-test	\
 	coding-test	\
+	connection-test	\
 	context-test	\
 	continue-test	\
 	cookies-test	\
@@ -94,6 +99,7 @@ TESTS =			\
 	redirect-test	\
 	requester-test	\
 	sniffing-test	\
+	ssl-test	\
 	streaming-test	\
 	timeout-test	\
 	uri-parsing	\
@@ -101,12 +107,14 @@ TESTS =			\
 	$(CURL_TESTS)	\
 	$(XMLRPC_TESTS)
 
-SNIFFING_FILES =		\
+RESOURCES =			\
 	resources/atom.xml	\
 	resources/home.gif	\
 	resources/html_binary.html \
 	resources/mbox		\
 	resources/mbox.gz	\
+	resources/mbox.raw	\
+	resources/mbox.zlib	\
 	resources/ps_binary.ps	\
 	resources/rss20.xml	\
 	resources/test.html	\
@@ -121,7 +129,7 @@ EXTRA_DIST =			\
 	test-cert.pem		\
 	test-key.pem		\
 	xmlrpc-server.php	\
-	$(SNIFFING_FILES)
+	$(RESOURCES)
 
 if MISSING_REGRESSION_TEST_PACKAGES
 check-local: check-TESTS

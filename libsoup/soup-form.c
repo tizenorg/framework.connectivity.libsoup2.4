@@ -115,10 +115,10 @@ soup_form_decode (const char *encoded_form)
 /**
  * soup_form_decode_multipart:
  * @msg: a #SoupMessage containing a "multipart/form-data" request body
- * @file_control_name: the name of the HTML file upload control, or %NULL
- * @filename: (out): return location for the name of the uploaded file
- * @content_type: (out): return location for the MIME type of the uploaded file
- * @file: (out): return location for the uploaded file data
+ * @file_control_name: (allow-none): the name of the HTML file upload control, or %NULL
+ * @filename: (out) (allow-none): return location for the name of the uploaded file, or %NULL
+ * @content_type: (out) (allow-none): return location for the MIME type of the uploaded file, or %NULL
+ * @file: (out) (allow-none): return location for the uploaded file data, or %NULL
  *
  * Decodes the "multipart/form-data" request in @msg; this is a
  * convenience method for the case when you have a single file upload
@@ -130,7 +130,7 @@ soup_form_decode (const char *encoded_form)
  * control data will be returned (as strings, as with
  * soup_form_decode()) in the returned #GHashTable.
  *
- * You may pass %NULL for @filename and/or @content_type if you do not
+ * You may pass %NULL for @filename, @content_type and/or @file if you do not
  * care about those fields. soup_form_decode_multipart() may also
  * return %NULL in those fields if the client did not provide that
  * information. You must free the returned filename and content-type
@@ -159,6 +159,8 @@ soup_form_decode_multipart (SoupMessage *msg, const char *file_control_name,
 	char *disposition, *name;
 	int i;
 
+	g_return_val_if_fail (SOUP_IS_MESSAGE (msg), NULL);
+
 	multipart = soup_multipart_new_from_message (msg->request_headers,
 						     msg->request_body);
 	if (!multipart)
@@ -168,7 +170,8 @@ soup_form_decode_multipart (SoupMessage *msg, const char *file_control_name,
 		*filename = NULL;
 	if (content_type)
 		*content_type = NULL;
-	*file = NULL;
+	if (file)
+		*file = NULL;
 
 	form_data_set = g_hash_table_new_full (g_str_hash, g_str_equal,
 					       g_free, g_free);
@@ -185,7 +188,7 @@ soup_form_decode_multipart (SoupMessage *msg, const char *file_control_name,
 			continue;
 		}
 
-		if (!strcmp (name, file_control_name)) {
+		if (file_control_name && !strcmp (name, file_control_name)) {
 			if (filename)
 				*filename = g_strdup (g_hash_table_lookup (params, "filename"));
 			if (content_type)

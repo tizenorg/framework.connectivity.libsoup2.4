@@ -41,6 +41,13 @@
    fun:g_thread_init_glib
 }
 {
+   glib/g_thread_self
+   Memcheck:Leak
+   ...
+   fun:g_slice_alloc0
+   fun:g_thread_self
+}
+{
    glib/g_type_register_static
    Memcheck:Leak
    ...
@@ -107,6 +114,12 @@
    fun:get_dispatch
 }
 {
+   glib/g_signal_connect
+   Memcheck:Leak
+   ...
+   fun:handler_list_ensure
+}
+{
    glib/g_signal_handlers_destroy
    Memcheck:Leak
    ...
@@ -167,16 +180,35 @@
    fun:_g_io_modules_ensure_loaded
 }
 {
-   glib/tlsinit
+   glib/giomodules2
+   Memcheck:Leak
+   ...
+   fun:_g_io_module_get_default
+}
+{
+   glib/proxydefault
+   Memcheck:Leak
+   ...
+   fun:get_default_proxy_resolver
+}
+{
+   glib/proxysettings
+   Memcheck:Leak
+   ...
+   fun:update_settings
+   fun:g_proxy_resolver_gnome_lookup
+}
+{
+   glib/tlsdefault
    Memcheck:Leak
    ...
    fun:get_default_tls_backend
 }
 {
-   glib/tlscrypto
+   glib/tlsdb
    Memcheck:Leak
    ...
-   fun:gcry_pthread_mutex_init
+   fun:g_tls_backend_get_default_database
 }
 {
    glib/tlscache
@@ -197,7 +229,133 @@
    fun:ensure_attribute_hash
    fun:lookup_attribute
 }
+{
+  glib/unixsignalthread
+  Memcheck:Leak
+  ...
+  fun:ensure_unix_signal_handler_installed_unlocked
+}
+{
+  glib/gioscheduler
+  Memcheck:Leak
+  ...
+  fun:init_scheduler
+}
+{
+   glib/gtestinit
+   Memcheck:Leak
+   ...
+   fun:g_test_init
+}
+{
+   glib/gtestroot
+   Memcheck:Leak
+   ...
+   fun:g_test_get_root
+}
+{
+   glib/gtestseed
+   Memcheck:Leak
+   ...
+   fun:test_run_seed
+}
+{
+   glib/gtestcase
+   Memcheck:Leak
+   ...
+   fun:g_test_create_case
+}
+{
+   glib/gtestsuite
+   Memcheck:Leak
+   ...
+   fun:g_test_create_suite
+}
+{
+   glib/gtestsuiteadd
+   Memcheck:Leak
+   ...
+   fun:g_test_suite_add
+}
+{
+   glib/gtestsuiteaddsuite
+   Memcheck:Leak
+   ...
+   fun:g_test_suite_add_suite
+}
+{
+   glib/gtestsuiterun
+   Memcheck:Leak
+   ...
+   fun:g_slist_copy
+   fun:g_test_run_suite_internal
+}
+{
+   glib/gthreadpool
+   Memcheck:Leak
+   ...
+   fun:g_thread_pool_start_thread
+}
+{
+   glib/gthreadpool1
+   Memcheck:Leak
+   ...
+   fun:g_thread_pool_wait_for_new_pool
+}
+{
+   glib/gthreadpool2
+   Memcheck:Leak
+   ...
+   fun:g_thread_pool_wait_for_new_task
+}
+{
+   glib/unused_thread_queue
+   Memcheck:Leak
+   ...
+   fun:g_async_queue_new
+   fun:g_thread_pool_new
+}
+{
+   glib/gthreadtls
+   Memcheck:Leak
+   ...
+   fun:_dl_allocate_tls
+   ...
+   fun:g_thread_create_posix_impl
+}
+{
+   glib/filenamecharsets
+   Memcheck:Leak
+   ...
+   fun:g_get_filename_charsets
+}
+{
+   glib/charset
+   Memcheck:Leak
+   ...
+   fun:g_get_charset
+}
+{
+   glib/gtlssessioncache
+   Memcheck:Leak
+   ...
+   fun:g_tls_backend_gnutls_store_session
+}
+{
+   glib/cached_poll_array
+   Memcheck:Leak
+   ...
+   fun:g_malloc_n
+   fun:g_main_context_iterate
+}
 
+# probably inlines the aggressive memcpy/memcmp
+{
+   gnutls/der
+   Memcheck:Addr4
+   ...
+   fun:asn1_der_coding
+}
 # probably using uninitialized memory as padding or something
 {
    gnutls/handshake
@@ -205,12 +363,31 @@
    ...
    fun:gnutls_handshake
 }
+{
+   gnutls/init
+   Memcheck:Leak
+   ...
+   fun:gnutls_global_init
+}
+# known leak in gnutls 2.12, fixed in 3.0
+{
+   gnutls/server_key_leak
+   Memcheck:Leak
+   ...
+   fun:call_get_cert_callback
+}
 
 {
    libxml2/xmlInitParser
    Memcheck:Leak
    ...
    fun:xmlInitParser
+}
+{
+   libxml2/xmlInitParserCtxt
+   Memcheck:Leak
+   ...
+   fun:xmlInitParserCtxt
 }
 {
    libxml2/xmlInitializeDict
@@ -243,4 +420,28 @@
    Memcheck:Leak
    ...
    fun:intern_header_name
+}
+
+
+# fixme?
+{
+   glib/gmuteximpl
+   Memcheck:Leak
+   ...
+   fun:g_mutex_impl_new
+   fun:g_mutex_get_impl
+}
+{
+   glib/gcondimpl
+   Memcheck:Leak
+   ...
+   fun:g_cond_impl_new
+   fun:g_cond_get_impl
+}
+{
+   glib/gprivateimpl
+   Memcheck:Leak
+   ...
+   fun:g_private_impl_new
+   fun:g_private_get_impl
 }

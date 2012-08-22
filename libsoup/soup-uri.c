@@ -81,6 +81,21 @@
  **/
 
 /**
+ * SOUP_URI_IS_VALID:
+ * @uri: a #SoupURI
+ *
+ * Tests whether @uri is a valid #SoupURI; that is, that it is non-%NULL
+ * and its @scheme and @path members are also non-%NULL.
+ *
+ * This macro does not check whether http and https URIs have a non-%NULL
+ * @host member.
+ *
+ * Return value: %TRUE if @uri is valid for use.
+ *
+ * Since: 2.38
+ **/
+
+/**
  * SOUP_URI_VALID_FOR_HTTP:
  * @uri: a #SoupURI
  *
@@ -142,11 +157,24 @@ soup_scheme_default_port (const char *scheme)
 SoupURI *
 soup_uri_new_with_base (SoupURI *base, const char *uri_string)
 {
-	SoupURI *uri;
+	SoupURI *uri, fixed_base;
 	const char *end, *hash, *colon, *at, *path, *question;
 	const char *p, *hostend;
 	gboolean remove_dot_segments = TRUE;
 	int len;
+
+	g_return_val_if_fail (uri_string != NULL, NULL);
+
+	/* Allow a %NULL path in @base, for compatibility */
+	if (base && base->scheme && !base->path) {
+		g_warn_if_fail (SOUP_URI_IS_VALID (base));
+
+		memcpy (&fixed_base, base, sizeof (SoupURI));
+		fixed_base.path = "";
+		base = &fixed_base;
+	}
+
+	g_return_val_if_fail (base == NULL || SOUP_URI_IS_VALID (base), NULL);
 
 	/* First some cleanup steps (which are supposed to all be no-ops,
 	 * but...). Skip initial whitespace, strip out internal tabs and
@@ -186,7 +214,7 @@ soup_uri_new_with_base (SoupURI *base, const char *uri_string)
 
 	/* Find scheme: initial [a-z+.-]* substring until ":" */
 	p = uri_string;
-	while (p < end && (g_ascii_isalnum (*p) ||
+	while (p < end && (g_ascii_isalpha (*p) ||
 			   *p == '.' || *p == '+' || *p == '-'))
 		p++;
 
@@ -195,8 +223,10 @@ soup_uri_new_with_base (SoupURI *base, const char *uri_string)
 		uri_string = p + 1;
 	}
 
-	if (uri_string == end && !base && !uri->fragment)
+	if (uri_string == end && !base && !uri->fragment) {
+		uri->path = g_strdup ("");
 		return uri;
+        }
 
 	/* Check for authority */
 	if (strncmp (uri_string, "//", 2) == 0) {
@@ -376,7 +406,7 @@ soup_uri_new_with_base (SoupURI *base, const char *uri_string)
 
 /**
  * soup_uri_new:
- * @uri_string: a URI
+ * @uri_string: (allow-none): a URI
  *
  * Parses an absolute URI.
  *
@@ -385,7 +415,8 @@ soup_uri_new_with_base (SoupURI *base, const char *uri_string)
  * call at least soup_uri_set_scheme() and soup_uri_set_path(), since
  * those fields are required.)
  *
- * Return value: a #SoupURI, or %NULL.
+ * Return value: a #SoupURI, or %NULL if the given string was found to be
+ *  invalid.
  **/
 SoupURI *
 soup_uri_new (const char *uri_string)
@@ -398,7 +429,7 @@ soup_uri_new (const char *uri_string)
 	uri = soup_uri_new_with_base (NULL, uri_string);
 	if (!uri)
 		return NULL;
-	if (!uri->scheme) {
+	if (!SOUP_URI_IS_VALID (uri)) {
 		soup_uri_free (uri);
 		return NULL;
 	}
@@ -427,10 +458,7 @@ soup_uri_to_string (SoupURI *uri, gboolean just_path_and_query)
 	char *return_result;
 
 	g_return_val_if_fail (uri != NULL, NULL);
-
-	/* IF YOU CHANGE ANYTHING IN THIS FUNCTION, RUN
-	 * tests/uri-parsing AFTERWARD.
-	 */
+	g_warn_if_fail (SOUP_URI_IS_VALID (uri));
 
 	str = g_string_sized_new (20);
 
@@ -452,10 +480,16 @@ soup_uri_to_string (SoupURI *uri, gboolean just_path_and_query)
 			g_string_append_printf (str, ":%u", uri->port);
 		if (!uri->path && (uri->query || uri->fragment))
 			g_string_append_c (str, '/');
+		else if ((!uri->path || !*uri->path) &&
+			 (uri->scheme == SOUP_URI_SCHEME_HTTP ||
+			  uri->scheme == SOUP_URI_SCHEME_HTTPS))
+			g_string_append_c (str, '/');
 	}
 
 	if (uri->path && *uri->path)
 		g_string_append (str, uri->path);
+	else if (just_path_and_query)
+		g_string_append_c (str, '/');
 
 	if (uri->query) {
 		g_string_append_c (str, '?');
@@ -486,6 +520,7 @@ soup_uri_copy (SoupURI *uri)
 	SoupURI *dup;
 
 	g_return_val_if_fail (uri != NULL, NULL);
+	g_warn_if_fail (SOUP_URI_IS_VALID (uri));
 
 	dup = g_slice_new0 (SoupURI);
 	dup->scheme   = uri->scheme;
@@ -522,6 +557,11 @@ parts_equal (const char *one, const char *two, gboolean insensitive)
 gboolean 
 soup_uri_equal (SoupURI *uri1, SoupURI *uri2)
 {
+	g_return_val_if_fail (uri1 != NULL, FALSE);
+	g_return_val_if_fail (uri2 != NULL, FALSE);
+	g_warn_if_fail (SOUP_URI_IS_VALID (uri1));
+	g_warn_if_fail (SOUP_URI_IS_VALID (uri2));
+
 	if (uri1->scheme != uri2->scheme                         ||
 	    uri1->port   != uri2->port                           ||
 	    !parts_equal (uri1->user, uri2->user, FALSE)         ||
@@ -589,6 +629,8 @@ soup_uri_encode (const char *part, const char *escape_extra)
 	GString *str;
 	char *encoded;
 
+	g_return_val_if_fail (part != NULL, NULL);
+
 	str = g_string_new (NULL);
 	append_uri_encoded (str, part, escape_extra);
 	encoded = str->str;
@@ -605,6 +647,8 @@ uri_decoded_copy (const char *part, int length)
 {
 	unsigned char *s, *d;
 	char *decoded = g_strndup (part, length);
+
+	g_return_val_if_fail (part != NULL, NULL);
 
 	s = d = (unsigned char *)decoded;
 	do {
@@ -638,6 +682,8 @@ uri_decoded_copy (const char *part, int length)
 char *
 soup_uri_decode (const char *part)
 {
+	g_return_val_if_fail (part != NULL, NULL);
+
 	return uri_decoded_copy (part, strlen (part));
 }
 
@@ -673,7 +719,7 @@ uri_normalized_copy (const char *part, int length,
 				*d++ = *s;
 			}
 		} else {
-			if (*s == ' ')
+			if (!g_ascii_isgraph (*s))
 				need_fixup = TRUE;
 			*d++ = *s;
 		}
@@ -681,16 +727,16 @@ uri_normalized_copy (const char *part, int length,
 
 	if (need_fixup) {
 		GString *fixed;
-		char *sp, *p;
 
 		fixed = g_string_new (NULL);
-		p = normalized;
-		while ((sp = strchr (p, ' '))) {
-			g_string_append_len (fixed, p, sp - p);
-			g_string_append (fixed, "%20");
-			p = sp + 1;
+		s = (guchar *)normalized;
+		while (*s) {
+			if (g_ascii_isgraph (*s))
+				g_string_append_c (fixed, *s);
+			else
+				g_string_append_printf (fixed, "%%%02X", (int)*s);
+			s++;
 		}
-		g_string_append (fixed, p);
 		g_free (normalized);
 		normalized = g_string_free (fixed, FALSE);
 	}
@@ -725,6 +771,8 @@ uri_normalized_copy (const char *part, int length,
 char *
 soup_uri_normalize (const char *part, const char *unescape_extra)
 {
+	g_return_val_if_fail (part != NULL, NULL);
+
 	return uri_normalized_copy (part, strlen (part), unescape_extra);
 }
 
@@ -734,7 +782,7 @@ soup_uri_normalize (const char *part, const char *unescape_extra)
  * @uri: a #SoupURI
  *
  * Tests if @uri uses the default port for its scheme. (Eg, 80 for
- * http.) (This only works for http and https; libsoup does not know
+ * http.) (This only works for http, https and ftp; libsoup does not know
  * the default ports of other protocols.)
  *
  * Return value: %TRUE or %FALSE
@@ -742,9 +790,8 @@ soup_uri_normalize (const char *part, const char *unescape_extra)
 gboolean
 soup_uri_uses_default_port (SoupURI *uri)
 {
-	g_return_val_if_fail (uri->scheme == SOUP_URI_SCHEME_HTTP ||
-			      uri->scheme == SOUP_URI_SCHEME_HTTPS ||
-			      uri->scheme == SOUP_URI_SCHEME_FTP, FALSE);
+	g_return_val_if_fail (uri != NULL, FALSE);
+	g_warn_if_fail (SOUP_URI_IS_VALID (uri));
 
 	return uri->port == soup_scheme_default_port (uri->scheme);
 }
@@ -776,6 +823,8 @@ soup_uri_uses_default_port (SoupURI *uri)
 const char *
 soup_uri_get_scheme (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, NULL);
+
 	return uri->scheme;
 }
 
@@ -790,6 +839,9 @@ soup_uri_get_scheme (SoupURI *uri)
 void
 soup_uri_set_scheme (SoupURI *uri, const char *scheme)
 {
+	g_return_if_fail (uri != NULL);
+	g_return_if_fail (scheme != NULL);
+
 	uri->scheme = soup_uri_parse_scheme (scheme, strlen (scheme));
 	uri->port = soup_scheme_default_port (uri->scheme);
 }
@@ -807,19 +859,23 @@ soup_uri_set_scheme (SoupURI *uri, const char *scheme)
 const char *
 soup_uri_get_user (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, NULL);
+
 	return uri->user;
 }
 
 /**
  * soup_uri_set_user:
  * @uri: a #SoupURI
- * @user: the username, or %NULL
+ * @user: (allow-none): the username, or %NULL
  *
  * Sets @uri's user to @user.
  **/
 void
 soup_uri_set_user (SoupURI *uri, const char *user)
 {
+	g_return_if_fail (uri != NULL);
+
 	g_free (uri->user);
 	uri->user = g_strdup (user);
 }
@@ -837,19 +893,23 @@ soup_uri_set_user (SoupURI *uri, const char *user)
 const char *
 soup_uri_get_password (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, NULL);
+
 	return uri->password;
 }
 
 /**
  * soup_uri_set_password:
  * @uri: a #SoupURI
- * @password: the password, or %NULL
+ * @password: (allow-none): the password, or %NULL
  *
  * Sets @uri's password to @password.
  **/
 void
 soup_uri_set_password (SoupURI *uri, const char *password)
 {
+	g_return_if_fail (uri != NULL);
+
 	g_free (uri->password);
 	uri->password = g_strdup (password);
 }
@@ -867,23 +927,29 @@ soup_uri_set_password (SoupURI *uri, const char *password)
 const char *
 soup_uri_get_host (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, NULL);
+
 	return uri->host;
 }
 
 /**
  * soup_uri_set_host:
  * @uri: a #SoupURI
- * @host: the hostname or IP address, or %NULL
+ * @host: (allow-none): the hostname or IP address, or %NULL
  *
  * Sets @uri's host to @host.
  *
  * If @host is an IPv6 IP address, it should not include the brackets
  * required by the URI syntax; they will be added automatically when
  * converting @uri to a string.
+ *
+ * http and https URIs should not have a %NULL @host.
  **/
 void
 soup_uri_set_host (SoupURI *uri, const char *host)
 {
+	g_return_if_fail (uri != NULL);
+
 	g_free (uri->host);
 	uri->host = g_strdup (host);
 }
@@ -901,6 +967,8 @@ soup_uri_set_host (SoupURI *uri, const char *host)
 guint
 soup_uri_get_port (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, 0);
+
 	return uri->port;
 }
 
@@ -915,6 +983,8 @@ soup_uri_get_port (SoupURI *uri)
 void
 soup_uri_set_port (SoupURI *uri, guint port)
 {
+	g_return_if_fail (uri != NULL);
+
 	uri->port = port;
 }
 
@@ -931,19 +1001,29 @@ soup_uri_set_port (SoupURI *uri, guint port)
 const char *
 soup_uri_get_path (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, NULL);
+
 	return uri->path;
 }
 
 /**
  * soup_uri_set_path:
  * @uri: a #SoupURI
- * @path: the path
+ * @path: the non-%NULL path
  *
  * Sets @uri's path to @path.
  **/
 void
 soup_uri_set_path (SoupURI *uri, const char *path)
 {
+	g_return_if_fail (uri != NULL);
+
+	/* We allow a NULL path for compatibility, but warn about it. */
+	if (!path) {
+		g_warn_if_fail (path != NULL);
+		path = "";
+	}
+
 	g_free (uri->path);
 	uri->path = g_strdup (path);
 }
@@ -961,19 +1041,23 @@ soup_uri_set_path (SoupURI *uri, const char *path)
 const char *
 soup_uri_get_query (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, NULL);
+
 	return uri->query;
 }
 
 /**
  * soup_uri_set_query:
  * @uri: a #SoupURI
- * @query: the query
+ * @query: (allow-none): the query
  *
  * Sets @uri's query to @query.
  **/
 void
 soup_uri_set_query (SoupURI *uri, const char *query)
 {
+	g_return_if_fail (uri != NULL);
+
 	g_free (uri->query);
 	uri->query = g_strdup (query);
 }
@@ -990,6 +1074,8 @@ soup_uri_set_query (SoupURI *uri, const char *query)
 void
 soup_uri_set_query_from_form (SoupURI *uri, GHashTable *form)
 {
+	g_return_if_fail (uri != NULL);
+
 	g_free (uri->query);
 	uri->query = soup_form_encode_hash (form);
 }
@@ -1012,6 +1098,8 @@ soup_uri_set_query_from_fields (SoupURI    *uri,
 {
 	va_list args;
 
+	g_return_if_fail (uri != NULL);
+
 	g_free (uri->query);
 	va_start (args, first_field);
 	uri->query = soup_form_encode_valist (first_field, args);
@@ -1031,30 +1119,34 @@ soup_uri_set_query_from_fields (SoupURI    *uri,
 const char *
 soup_uri_get_fragment (SoupURI *uri)
 {
+	g_return_val_if_fail (uri != NULL, NULL);
+
 	return uri->fragment;
 }
 
 /**
  * soup_uri_set_fragment:
  * @uri: a #SoupURI
- * @fragment: the fragment
+ * @fragment: (allow-none): the fragment
  *
  * Sets @uri's fragment to @fragment.
  **/
 void
 soup_uri_set_fragment (SoupURI *uri, const char *fragment)
 {
+	g_return_if_fail (uri != NULL);
+
 	g_free (uri->fragment);
 	uri->fragment = g_strdup (fragment);
 }
 
 /**
  * soup_uri_copy_host:
- * @uri: a #SoupUri
+ * @uri: a #SoupURI
  *
  * Makes a copy of @uri, considering only the protocol, host, and port
  *
- * Return value: the new #SoupUri
+ * Return value: the new #SoupURI
  *
  * Since: 2.26.3
  **/
@@ -1064,21 +1156,20 @@ soup_uri_copy_host (SoupURI *uri)
 	SoupURI *dup;
 
 	g_return_val_if_fail (uri != NULL, NULL);
+	g_warn_if_fail (SOUP_URI_IS_VALID (uri));
 
 	dup = soup_uri_new (NULL);
 	dup->scheme = uri->scheme;
 	dup->host   = g_strdup (uri->host);
 	dup->port   = uri->port;
-	if (dup->scheme == SOUP_URI_SCHEME_HTTP ||
-	    dup->scheme == SOUP_URI_SCHEME_HTTPS)
-		dup->path = g_strdup ("");
+	dup->path   = g_strdup ("");
 
 	return dup;
 }
 
 /**
  * soup_uri_host_hash:
- * @key: (type Soup.URI): a #SoupURI
+ * @key: (type Soup.URI): a #SoupURI with a non-%NULL @host member
  *
  * Hashes @key, considering only the scheme, host, and port.
  *
@@ -1092,6 +1183,7 @@ soup_uri_host_hash (gconstpointer key)
 	const SoupURI *uri = key;
 
 	g_return_val_if_fail (uri != NULL && uri->host != NULL, 0);
+	g_warn_if_fail (SOUP_URI_IS_VALID (uri));
 
 	return GPOINTER_TO_UINT (uri->scheme) + uri->port +
 		soup_str_case_hash (uri->host);
@@ -1099,8 +1191,8 @@ soup_uri_host_hash (gconstpointer key)
 
 /**
  * soup_uri_host_equal:
- * @v1: (type Soup.URI): a #SoupURI
- * @v2: (type Soup.URI): a #SoupURI
+ * @v1: (type Soup.URI): a #SoupURI with a non-%NULL @host member
+ * @v2: (type Soup.URI): a #SoupURI with a non-%NULL @host member
  *
  * Compares @v1 and @v2, considering only the scheme, host, and port.
  *
@@ -1117,6 +1209,8 @@ soup_uri_host_equal (gconstpointer v1, gconstpointer v2)
 
 	g_return_val_if_fail (one != NULL && two != NULL, one == two);
 	g_return_val_if_fail (one->host != NULL && two->host != NULL, one->host == two->host);
+	g_warn_if_fail (SOUP_URI_IS_VALID (one));
+	g_warn_if_fail (SOUP_URI_IS_VALID (two));
 
 	if (one->scheme != two->scheme)
 		return FALSE;

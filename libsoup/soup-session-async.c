@@ -39,6 +39,7 @@ static void  queue_message   (SoupSession *session, SoupMessage *req,
 static guint send_message    (SoupSession *session, SoupMessage *req);
 static void  cancel_message  (SoupSession *session, SoupMessage *msg,
 			      guint status_code);
+static void  kick            (SoupSession *session);
 
 static void  auth_required   (SoupSession *session, SoupMessage *msg,
 			      SoupAuth *auth, gboolean retrying);
@@ -46,24 +47,38 @@ static void  auth_required   (SoupSession *session, SoupMessage *msg,
 G_DEFINE_TYPE (SoupSessionAsync, soup_session_async, SOUP_TYPE_SESSION)
 
 typedef struct {
-	GSource *idle_run_queue_source;
+	GHashTable *idle_run_queue_sources;
+
 } SoupSessionAsyncPrivate;
 #define SOUP_SESSION_ASYNC_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SESSION_ASYNC, SoupSessionAsyncPrivate))
 
 static void
-soup_session_async_init (SoupSessionAsync *sa)
+destroy_unref_source (gpointer source)
 {
+	g_source_destroy (source);
+	g_source_unref (source);
 }
 
 static void
-finalize (GObject *object)
+soup_session_async_init (SoupSessionAsync *sa)
+{
+	SoupSessionAsyncPrivate *priv = SOUP_SESSION_ASYNC_GET_PRIVATE (sa);
+
+	priv->idle_run_queue_sources =
+		g_hash_table_new_full (NULL, NULL, NULL, destroy_unref_source);
+}
+
+static void
+dispose (GObject *object)
 {
 	SoupSessionAsyncPrivate *priv = SOUP_SESSION_ASYNC_GET_PRIVATE (object);
 
-	if (priv->idle_run_queue_source)
-		g_source_destroy (priv->idle_run_queue_source);
+	if (priv->idle_run_queue_sources) {
+		g_hash_table_destroy (priv->idle_run_queue_sources);
+		priv->idle_run_queue_sources = NULL;
+	}
 
-	G_OBJECT_CLASS (soup_session_async_parent_class)->finalize (object);
+	G_OBJECT_CLASS (soup_session_async_parent_class)->dispose (object);
 }
 
 static void
@@ -80,8 +95,9 @@ soup_session_async_class_init (SoupSessionAsyncClass *soup_session_async_class)
 	session_class->send_message = send_message;
 	session_class->cancel_message = cancel_message;
 	session_class->auth_required = auth_required;
+	session_class->kick = kick;
 
-	object_class->finalize = finalize;
+	object_class->dispose = dispose;
 }
 
 
@@ -232,6 +248,8 @@ tunnel_complete (SoupMessageQueueItem *item)
 	soup_message_finished (item->msg);
 	if (item->related->msg->status_code)
 		item->related->state = SOUP_MESSAGE_FINISHING;
+	else
+		soup_message_set_https_status (item->related->msg, item->conn);
 
 	do_idle_run_queue (session);
 	soup_message_queue_item_unref (item->related);
@@ -270,6 +288,7 @@ tunnel_message_completed (SoupMessage *msg, gpointer user_data)
 	if (item->state == SOUP_MESSAGE_RESTARTING) {
 		soup_message_restarted (msg);
 		if (item->conn) {
+			item->state = SOUP_MESSAGE_RUNNING;
 			soup_session_send_queue_item (session, item, tunnel_message_completed);
 			return;
 		}
@@ -284,8 +303,7 @@ tunnel_message_completed (SoupMessage *msg, gpointer user_data)
 			soup_connection_disconnect (item->conn);
 		if (msg->status_code == SOUP_STATUS_TRY_AGAIN) {
 			item->related->state = SOUP_MESSAGE_AWAITING_CONNECTION;
-			g_object_unref (item->related->conn);
-			item->related->conn = NULL;
+			soup_message_queue_item_set_connection (item->related, NULL);
 		} else
 			soup_message_set_status (item->related->msg, msg->status_code);
 
@@ -312,12 +330,13 @@ got_connection (SoupConnection *conn, guint status, gpointer user_data)
 		return;
 	}
 
+	soup_message_set_https_status (item->msg, conn);
+
 	if (status != SOUP_STATUS_OK) {
 		soup_connection_disconnect (conn);
 
 		if (status == SOUP_STATUS_TRY_AGAIN) {
-			g_object_unref (item->conn);
-			item->conn = NULL;
+			soup_message_queue_item_set_connection (item, NULL);
 			item->state = SOUP_MESSAGE_AWAITING_CONNECTION;
 		} else {
 			soup_session_set_item_status (session, item, status);
@@ -358,7 +377,13 @@ process_queue_item (SoupMessageQueueItem *item,
 	SoupSession *session = item->session;
 	SoupProxyURIResolver *proxy_resolver;
 
+	if (item->async_context != soup_session_get_async_context (session))
+		return;
+
 	do {
+		if (item->paused)
+			return;
+
 		switch (item->state) {
 		case SOUP_MESSAGE_STARTING:
 			proxy_resolver = (SoupProxyURIResolver *)soup_session_get_feature_for_message (session, SOUP_TYPE_PROXY_URI_RESOLVER, item->msg);
@@ -461,7 +486,11 @@ idle_run_queue (gpointer sa)
 {
 	SoupSessionAsyncPrivate *priv = SOUP_SESSION_ASYNC_GET_PRIVATE (sa);
 
-	priv->idle_run_queue_source = NULL;
+	if (!priv->idle_run_queue_sources)
+		return FALSE;
+
+	g_hash_table_remove (priv->idle_run_queue_sources,
+			     soup_session_get_async_context (sa));
 	run_queue (sa);
 	return FALSE;
 }
@@ -471,10 +500,16 @@ do_idle_run_queue (SoupSession *session)
 {
 	SoupSessionAsyncPrivate *priv = SOUP_SESSION_ASYNC_GET_PRIVATE (session);
 
-	if (!priv->idle_run_queue_source) {
-		priv->idle_run_queue_source = soup_add_completion (
-			soup_session_get_async_context (session),
-			idle_run_queue, session);
+	if (!priv->idle_run_queue_sources)
+		return;
+
+	if (!g_hash_table_lookup (priv->idle_run_queue_sources,
+				  soup_session_get_async_context (session))) {
+		GMainContext *async_context = soup_session_get_async_context (session);
+		GSource *source = soup_add_completion (async_context, idle_run_queue, session);
+
+		g_hash_table_insert (priv->idle_run_queue_sources,
+				     async_context, g_source_ref (source));
 	}
 }
 
@@ -574,4 +609,10 @@ auth_required (SoupSession *session, SoupMessage *msg,
 		SOUP_SESSION_CLASS (soup_session_async_parent_class)->
 			auth_required (session, msg, auth, retrying);
 	}
+}
+
+static void
+kick (SoupSession *session)
+{
+	do_idle_run_queue (session);
 }
