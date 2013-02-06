@@ -11,7 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
-
+#include "TIZEN.h"
 #include "soup-connection.h"
 #include "soup-message.h"
 #include "soup-message-private.h"
@@ -302,6 +302,13 @@ read_metadata (SoupMessage *msg, gboolean to_blank)
 						     (guchar *)"\r\n", 2);
 				got_lf = TRUE;
 				break;
+#if ENABLE(TIZEN_FIX_RESPONSE_HEADERS_LINEFEED)
+			} else if (!error && !nread) {
+				g_byte_array_append (io->read_meta_buf,
+						     (guchar *)"\r\n", 2);
+				got_lf = TRUE;
+				break;
+#endif
 			}
 			/* else fall through */
 
@@ -326,6 +333,13 @@ read_metadata (SoupMessage *msg, gboolean to_blank)
 					   io->read_meta_buf->len - 3,
 					   "\n\r\n", 3))
 				break;
+#if ENABLE(TIZEN_FIX_RESPONSE_HEADERS_LINEFEED)
+			else if (!nread && !error &&
+				!strncmp ((char *)io->read_meta_buf->data +
+					 io->read_meta_buf->len - 3,
+					   "\n\r\n", 3))
+				break;
+#endif
 		}
 	}
 
