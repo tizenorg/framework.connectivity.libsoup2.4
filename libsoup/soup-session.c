@@ -109,6 +109,9 @@ typedef struct {
 	GResolver *resolver;
 
 	char **http_aliases, **https_aliases;
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	char *certificate_path;
+#endif
 } SoupSessionPrivate;
 #define SOUP_SESSION_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SESSION, SoupSessionPrivate))
 
@@ -171,6 +174,9 @@ enum {
 	PROP_REMOVE_FEATURE_BY_TYPE,
 	PROP_HTTP_ALIASES,
 	PROP_HTTPS_ALIASES,
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	PROP_CERTIFICATE_PATH,
+#endif
 
 	LAST_PROP
 };
@@ -267,6 +273,9 @@ finalize (GObject *object)
 
 	g_free (priv->http_aliases);
 	g_free (priv->https_aliases);
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	g_free (priv->certificate_path);
+#endif
 
 	G_OBJECT_CLASS (soup_session_parent_class)->finalize (object);
 }
@@ -964,6 +973,22 @@ soup_session_class_init (SoupSessionClass *session_class)
 				    "URI schemes that are considered aliases for 'https'",
 				    G_TYPE_STRV,
 				    G_PARAM_READWRITE));
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	/**
+	 * SOUP_SESSION_CERTIFICATE_PATH
+	 * SoupSession:certificate-path:
+	 *
+	 * Set the certificate path for soup session
+	 *
+	 */
+	g_object_class_install_property (
+		object_class, PROP_CERTIFICATE_PATH,
+		g_param_spec_string (SOUP_SESSION_CERTIFICATE_PATH,
+				      "certificate file path",
+				      "Set the ca-certificate.crt file path",
+				      NULL,
+				      G_PARAM_READWRITE));
+#endif
 }
 
 /* Converts a language in POSIX format and to be RFC2616 compliant    */
@@ -1282,6 +1307,18 @@ set_property (GObject *object, guint prop_id,
 	case PROP_HTTPS_ALIASES:
 		set_aliases (&priv->https_aliases, g_value_get_boxed (value));
 		break;
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+        case PROP_CERTIFICATE_PATH:
+		if (priv->certificate_path) {
+			g_free (priv->certificate_path);
+			priv->certificate_path = NULL;
+		}
+		priv->certificate_path = g_strdup (g_value_get_string (value));
+#if ENABLE(TIZEN_DLOG)
+		TIZEN_LOGE("set_property() PROP_CERTIFICATE_PATH priv->certificate_path is set [%s]", priv->certificate_path);
+#endif
+		break;
+#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -1361,6 +1398,14 @@ get_property (GObject *object, guint prop_id,
 	case PROP_HTTPS_ALIASES:
 		g_value_set_boxed (value, priv->https_aliases);
 		break;
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+        case PROP_CERTIFICATE_PATH:
+#if ENABLE(TIZEN_DLOG)
+		TIZEN_LOGE("get_property() PROP_CERTIFICATE_PATH");
+#endif
+		g_value_set_string (value, priv->certificate_path);
+		break;
+#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -2732,3 +2777,37 @@ soup_session_get_feature_for_message (SoupSession *session, GType feature_type,
 		return NULL;
 	return feature;
 }
+
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+void soup_session_set_certificate_file(SoupSession *session, SoupMessageQueueItem *item)
+{
+	SoupSessionPrivate *priv = SOUP_SESSION_GET_PRIVATE (session);
+	SoupURI *uri;
+
+	if (!priv->certificate_path)
+		return;
+
+	uri = soup_message_get_uri (item->msg);
+
+	if (uri_is_https (priv, uri) && (!priv->tlsdb)) {
+		GError* error = NULL;
+		GTlsDatabase* tlsdb = g_tls_file_database_new(priv->certificate_path, &error);
+#if ENABLE(TIZEN_DLOG)
+                TIZEN_LOGE("g_tls_file_database_new() is called. [%s]", priv->certificate_path);
+#endif
+		if (!error && tlsdb) {
+#if ENABLE(TIZEN_DLOG)
+			TIZEN_LOGE("g_tls_file_database_new() is success. no error call set_tlsdb().");
+#endif
+			set_tlsdb (session, tlsdb);
+		}
+
+		if (tlsdb)
+			g_object_unref (tlsdb);
+		if (priv->certificate_path) {
+			g_free (priv->certificate_path);
+			priv->certificate_path = NULL;
+		}
+       }
+}
+#endif

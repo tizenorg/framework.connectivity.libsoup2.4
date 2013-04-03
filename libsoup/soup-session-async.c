@@ -22,6 +22,7 @@
 #include "soup-proxy-uri-resolver.h"
 #include "soup-uri.h"
 
+#include "TIZEN.h"
 /**
  * SECTION:soup-session-async
  * @short_description: Soup session for asynchronous (main-loop-based) I/O.
@@ -386,6 +387,9 @@ process_queue_item (SoupMessageQueueItem *item,
 
 		switch (item->state) {
 		case SOUP_MESSAGE_STARTING:
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+			soup_session_set_certificate_file(session, item);
+#endif
 			proxy_resolver = (SoupProxyURIResolver *)soup_session_get_feature_for_message (session, SOUP_TYPE_PROXY_URI_RESOLVER, item->msg);
 			if (!proxy_resolver) {
 				item->state = SOUP_MESSAGE_AWAITING_CONNECTION;

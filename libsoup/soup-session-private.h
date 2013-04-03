@@ -30,6 +30,10 @@ void                  soup_session_unqueue_item         (SoupSession          *s
 void                  soup_session_set_item_status      (SoupSession          *session,
 							 SoupMessageQueueItem *item,
 							 guint                 status_code);
+/*#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)*/
+void                  soup_session_set_certificate_file      (SoupSession          *session,
+							 SoupMessageQueueItem *item);
+/*#endif*/
 
 G_END_DECLS
 
