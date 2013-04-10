@@ -211,6 +211,26 @@ required at compile time), but you should be sure to add a runtime
 dependency on it.])
 fi
 
+dnl *************************
+dnl *** Tizen dlog support  ***
+dnl *************************
+
+AC_ARG_ENABLE(tizen-dlog,
+         AS_HELP_STRING([--disable-tizen-dlog], [Disable Tizen dlog support ]),
+         enable_tizen_dlog=no,
+         enable_tizen_dlog=yes)
+
+AC_MSG_CHECKING([for Tizen dlog])
+if test $enable_tizen_dlog != no;then
+	AC_DEFINE(ENABLE_TIZEN_DLOG, 1, [Add new feature, which prints logs via Tizen log system named dlog.])
+	PKG_CHECK_MODULES(TIZEN_DLOG, dlog)
+	AC_SUBST(TIZEN_DLOG_CFLAGS)
+	AC_SUBST(TIZEN_DLOG_LIBS)
+fi
+AC_MSG_RESULT($enable_tizen_dlog)
+
+AM_CONDITIONAL(TIZEN_DLOG, [test $enable_tizen_dlog = yes])
+
 dnl ******************************
 dnl *** Stuff for regression tests
 dnl ******************************

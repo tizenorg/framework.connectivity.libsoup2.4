@@ -16,6 +16,7 @@ BuildRequires:  pkgconfig(libxml-2.0)
 BuildRequires:  pkgconfig(zlib)
 BuildRequires:  glib-networking
 BuildRequires:  gnome-common
+BuildRequires:  pkgconfig(dlog)
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
 
@@ -42,7 +43,7 @@ an HTTP library implementation in C (development files).
 touch gtk-doc.make
 ./autogen.sh --prefix=/usr --without-gnome --enable-sqllite=yes --disable-tls-check --disable-static
 
-make %{?jobs:-j%jobs}
+make V=1 %{?jobs:-j%jobs}
 
 %install
 rm -rf %{buildroot}

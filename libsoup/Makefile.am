@@ -16,6 +16,11 @@ INCLUDES = 				\
 	$(SQLITE_CFLAGS)		\
 	$(GNOME_KEYRING_CFLAGS)
 
+if TIZEN_DLOG
+INCLUDES +=			\
+	$(TIZEN_DLOG_CFLAGS)
+endif
+
 libsoupincludedir = $(includedir)/libsoup-2.4/libsoup
 
 soup_headers =			\
@@ -86,6 +91,11 @@ libsoup_2_4_la_LIBADD =			\
 if SQLLITE_SUPPORT
 libsoup_2_4_la_LIBADD +=		\
 	$(SQLITE_LIBS)
+endif
+
+if TIZEN_DLOG
+libsoup_2_4_la_LIBADD +=		\
+	$(TIZEN_DLOG_LIBS)
 endif
 
 libsoup_2_4_la_SOURCES =		\
