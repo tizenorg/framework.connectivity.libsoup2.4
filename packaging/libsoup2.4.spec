@@ -1,6 +1,6 @@
 Name:       libsoup2.4
 Summary:    HTTP client/server library for GNOME
-Version:    2.38.1_0.1.3
+Version:    2.38.1_0.1.4
 Release:    1
 Group:      Applications/Networking
 License:    LGPLv2
@@ -68,6 +68,9 @@ cp COPYING %{buildroot}/usr/share/license/%{name}
 /usr/lib/pkgconfig/libsoup-2.4.pc
 
 %changelog
+* Mon Sep 23 2013 Keunsoon Lee <keunsoon.lee@samsung.com>
+- [Release] Update changelog for libsoup2.4-2.38.1_0.1.4
+
 * Tue May 07 2013 Keunsoon Lee <keunsoon.lee@samsung.com>
 - [Release] Update changelog for libsoup2.4-2.38.1_0.1.3
 
