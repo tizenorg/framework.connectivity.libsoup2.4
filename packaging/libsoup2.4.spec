@@ -47,6 +47,8 @@ make V=1 %{?jobs:-j%jobs}
 
 %install
 rm -rf %{buildroot}
+mkdir -p %{buildroot}/usr/share/license
+cp COPYING %{buildroot}/usr/share/license/%{name}
 
 %make_install
 
@@ -57,6 +59,7 @@ rm -rf %{buildroot}
 
 %files
 %manifest libsoup2.4.manifest
+/usr/share/license/%{name}
 /usr/lib/*.so.*
 
 %files devel
