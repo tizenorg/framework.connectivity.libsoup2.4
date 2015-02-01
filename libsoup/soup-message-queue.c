@@ -12,6 +12,7 @@
 
 #include "soup-message-queue.h"
 #include "soup-uri.h"
+#include "TIZEN.h"
 
 /* This is an internal structure used by #SoupSession and its
  * subclasses to keep track of the status of messages currently being
@@ -153,6 +154,28 @@ soup_message_queue_item_ref (SoupMessageQueueItem *item)
 void
 soup_message_queue_item_unref (SoupMessageQueueItem *item)
 {
+#ifdef ENABLE_TIZEN_ADD_NULL_CHECK_ON_QUEUE_ITEM
+	if (!item) {
+		TIZEN_LOGE ("item is NULL");
+		return;
+	}
+
+	if (!item->session) {
+		TIZEN_LOGE ("item[%p] item->session is NULL, item->msg[%p]", item, item->msg);
+		return;
+	}
+
+	if (!item->queue) {
+		TIZEN_LOGE ("item[%p] item->queue is NULL, item->session[%p] item->msg[%p]", item, item->session, item->msg);
+		return;
+	}
+
+	if (!item->msg) {
+		TIZEN_LOGE ("item[%p] item->msg is NULL, item->session[%p]", item, item->session);
+		return;
+	}
+#endif
+
 	g_mutex_lock (&item->queue->mutex);
 
 	/* Decrement the ref_count; if it's still non-zero OR if the

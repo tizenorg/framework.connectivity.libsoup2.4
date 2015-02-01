@@ -19,6 +19,7 @@
 #include "soup-cookie-jar-sqlite.h"
 #include "soup-cookie.h"
 #include "soup-date.h"
+#include "TIZEN.h"
 
 /**
  * SECTION:soup-cookie-jar-sqlite
@@ -322,10 +323,20 @@ changed (SoupCookieJar *jar,
 		sqlite3_free (query);
 	}
 
+#if ENABLE (TIZEN_STORE_SESSION_COOKIE)
+	if (new_cookie) {
+		gulong expires;
+
+		if (!new_cookie->expires)
+			expires = time (NULL) + 1 * 60 * 60;
+		else
+			expires = (gulong)soup_date_to_time_t (new_cookie->expires);
+#else
 	if (new_cookie && new_cookie->expires) {
 		gulong expires;
 		
 		expires = (gulong)soup_date_to_time_t (new_cookie->expires);
+#endif
 		query = sqlite3_mprintf (QUERY_INSERT, 
 					 new_cookie->name,
 					 new_cookie->value,

@@ -20,6 +20,8 @@
 #include "soup-message.h"
 #include "soup-session-feature.h"
 #include "soup-uri.h"
+/*TIZEN_patch*/
+#include "TIZEN.h"
 
 /**
  * SECTION:soup-cookie-jar
@@ -34,7 +36,6 @@
  * Note that the base #SoupCookieJar class does not support any form
  * of long-term cookie persistence.
  **/
-
 static void soup_cookie_jar_session_feature_init (SoupSessionFeatureInterface *feature_interface, gpointer interface_data);
 static void request_queued (SoupSessionFeature *feature, SoupSession *session,
 			    SoupMessage *msg);
@@ -87,6 +88,9 @@ soup_cookie_jar_init (SoupCookieJar *jar)
 					       g_free, NULL);
 	priv->serials = g_hash_table_new (NULL, NULL);
 	priv->accept_policy = SOUP_COOKIE_JAR_ACCEPT_ALWAYS;
+#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
+	soup_date_get_current_system_year();
+#endif
 }
 
 static void
@@ -250,7 +254,7 @@ get_property (GObject *object, guint prop_id,
  * Since: 2.24
  **/
 SoupCookieJar *
-soup_cookie_jar_new (void) 
+soup_cookie_jar_new (void)
 {
 	return g_object_new (SOUP_TYPE_COOKIE_JAR, NULL);
 }
@@ -567,6 +571,7 @@ soup_cookie_jar_set_cookie_with_first_party (SoupCookieJar *jar,
 	if (soup_cookie) {
 		if (priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_ALWAYS ||
 		    soup_cookie_domain_matches (soup_cookie, first_party->host)) {
+
 			/* will steal or free soup_cookie */
 			soup_cookie_jar_add_cookie (jar, soup_cookie);
 		} else {
@@ -588,7 +593,7 @@ process_set_cookie_header (SoupMessage *msg, gpointer user_data)
 	new_cookies = soup_cookies_from_response (msg);
 	for (nc = new_cookies; nc; nc = nc->next) {
 		SoupURI *first_party = soup_message_get_first_party (msg);
-		
+
 		if ((priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_NO_THIRD_PARTY &&
 		     first_party != NULL && first_party->host &&
 		     soup_cookie_domain_matches (nc->data, first_party->host)) ||
@@ -755,7 +760,7 @@ soup_cookie_jar_get_accept_policy (SoupCookieJar *jar)
  * soup_cookie_jar_set_accept_policy:
  * @jar: a #SoupCookieJar
  * @policy: a #SoupCookieJarAcceptPolicy
- * 
+ *
  * Sets @policy as the cookie acceptance policy for @jar.
  *
  * Since: 2.30

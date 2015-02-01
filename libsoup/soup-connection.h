@@ -34,7 +34,6 @@ typedef struct {
 
 GType soup_connection_get_type (void);
 
-
 typedef void  (*SoupConnectionCallback)        (SoupConnection   *conn,
 						guint             status,
 						gpointer          data);
@@ -52,6 +51,9 @@ typedef void  (*SoupConnectionCallback)        (SoupConnection   *conn,
 #define SOUP_CONNECTION_IDLE_TIMEOUT    "idle-timeout"
 #define SOUP_CONNECTION_STATE           "state"
 #define SOUP_CONNECTION_MESSAGE         "message"
+/*#if ENABLE_TIZEN_SPDY*/
+#define SOUP_CONNECTION_ALLOW_SPDY        "allow-spdy"
+/*#endif*/
 
 SoupConnection *soup_connection_new            (const char       *propname1,
 						...) G_GNUC_NULL_TERMINATED;
@@ -88,6 +90,15 @@ void            soup_connection_send_request   (SoupConnection          *conn,
 						gpointer                 user_data);
 
 gboolean        soup_connection_get_ssl_fallback (SoupConnection   *conn);
+
+#if defined ENABLE_TIZEN_SPDY && ENABLE_TIZEN_SPDY
+gboolean				 soup_connection_is_spdy_protocol		(SoupConnection	*conn);
+SoupConnectionSpdy	*soup_connection_get_spdy_connection	(SoupConnection	*conn);
+#endif
+
+//#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+gboolean soup_connection_is_timedout_error (SoupConnection *conn);
+//#endif
 
 G_END_DECLS
 

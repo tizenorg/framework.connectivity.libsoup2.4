@@ -10,6 +10,22 @@
 #include "soup-auth.h"
 #include "soup-content-sniffer.h"
 
+// Need to wrap this code with ENABLE_TIZEN_SPDY, but just comment it because typedef is not able to wrap #ifdef
+/* #if ENABLE_TIZEN_SPDY */
+typedef enum {
+	SPDY_MESSAGE_STATE_NOT_STARTED,
+	SPDY_MESSAGE_STATE_HEADERS,
+	SPDY_MESSAGE_STATE_BODY,
+	SPDY_MESSAGE_STATE_BODY_FINISHED,
+	SPDY_MESSAGE_STATE_SETTINGS,
+	SPDY_MESSAGE_STATE_PING,
+	SPDY_MESSAGE_STATE_WND_UPDATE,
+	SPDY_MESSAGE_STATE_STREAM_REQ,
+	SPDY_MESSAGE_STATE_GOAWAY,
+	SPDY_MESSAGE_STATE_NONE
+} SoupSpdyRecvState;
+/* #endif */
+
 typedef struct {
 	gpointer           io_data;
 
@@ -37,6 +53,12 @@ typedef struct {
 
 	GTlsCertificate      *tls_certificate;
 	GTlsCertificateFlags  tls_errors;
+
+#if ENABLE_TIZEN_SPDY
+	gboolean	is_sync_context;
+	gboolean	is_spdy;
+	SoupSpdyRecvState spdy_state;
+#endif
 } SoupMessagePrivate;
 #define SOUP_MESSAGE_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_MESSAGE, SoupMessagePrivate))
 
@@ -70,6 +92,11 @@ void soup_message_io_client    (SoupMessageQueueItem      *item,
 				gpointer                   headers_data,
 				SoupMessageCompletionFn    completion_cb,
 				gpointer                   user_data);
+
+//#if ENABLE_TIZEN_SPDY
+gboolean soup_message_is_using_sync_context (SoupMessage *msg);
+//#endif
+
 void soup_message_io_server    (SoupMessage               *msg,
 				SoupSocket                *sock,
 				SoupMessageGetHeadersFn    get_headers_cb,
@@ -103,5 +130,9 @@ void soup_message_set_https_status (SoupMessage    *msg,
 void soup_message_network_event (SoupMessage         *msg,
 				 GSocketClientEvent   event,
 				 GIOStream           *connection);
+
+// #if ENABL(TIZEN_CERTIFICATE_FILE_SET)
+gboolean		soup_message_is_from_session_restore (SoupMessage *msg);
+// #endif
 
 #endif /* SOUP_MESSAGE_PRIVATE_H */

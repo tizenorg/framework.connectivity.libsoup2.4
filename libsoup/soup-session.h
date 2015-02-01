@@ -83,6 +83,13 @@ GType soup_session_get_type (void);
 /*#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)*/
 #define SOUP_SESSION_CERTIFICATE_PATH        "certificate-path"
 /*#endif*/
+/*#if ENABLE_TIZEN_SPDY*/
+#define SOUP_SESSION_ALLOW_SPDY              "allow-spdy"
+/*#endif*/
+/*#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)*/
+#define SOUP_SESSION_ALLOW_REDIRECTION_PREDICTOR "allow-redirection-predictor"
+/*#endif*/
+
 
 GMainContext   *soup_session_get_async_context(SoupSession           *session);
 

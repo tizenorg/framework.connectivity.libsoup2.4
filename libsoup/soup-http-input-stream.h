@@ -24,6 +24,7 @@
 
 #include <gio/gio.h>
 #include <libsoup/soup-types.h>
+#include "TIZEN.h"
 
 G_BEGIN_DECLS
 
@@ -66,6 +67,15 @@ void          soup_http_input_stream_send_async  (SoupHTTPInputStream  *httpstre
 						  GCancellable         *cancellable,
 						  GAsyncReadyCallback   callback,
 						  gpointer              user_data);
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+void                 soup_http_input_stream_send_async_without_queue_message  (SoupHTTPInputStream  *httpstream,
+							 int                   io_priority,
+							 GCancellable         *cancellable,
+							 GAsyncReadyCallback   callback,
+							 gpointer              user_data);
+#endif
+
 gboolean      soup_http_input_stream_send_finish (SoupHTTPInputStream  *httpstream,
 						  GAsyncResult         *result,
 						  GError              **error);

@@ -805,7 +805,7 @@ serialize_cookie (SoupCookie *cookie, GString *header, gboolean set_cookie)
 	}
 	if (cookie->secure)
 		g_string_append (header, "; secure");
-	if (cookie->secure)
+	if (cookie->http_only)
 		g_string_append (header, "; HttpOnly");
 }
 

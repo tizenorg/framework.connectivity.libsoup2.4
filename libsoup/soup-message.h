@@ -77,7 +77,9 @@ GType soup_message_get_type (void);
 #define SOUP_MESSAGE_RESPONSE_HEADERS "response-headers"
 #define SOUP_MESSAGE_TLS_CERTIFICATE  "tls-certificate"
 #define SOUP_MESSAGE_TLS_ERRORS       "tls-errors"
-
+//#if ENABLE_TIZEN_SPDY
+#define SOUP_MESSAGE_USE_SYNC_CONTEXT "use-sync-context"
+//#endif
 SoupMessage   *soup_message_new                 (const char        *method,
 						 const char        *uri_string);
 SoupMessage   *soup_message_new_from_uri        (const char        *method,
@@ -122,7 +124,10 @@ typedef enum {
 #endif
 	SOUP_MESSAGE_CONTENT_DECODED      = (1 << 4),
 	SOUP_MESSAGE_CERTIFICATE_TRUSTED  = (1 << 5),
-	SOUP_MESSAGE_NEW_CONNECTION       = (1 << 6)
+	SOUP_MESSAGE_NEW_CONNECTION       = (1 << 6),
+//#if ENABLE(TIZEN_SOUP_MESSAGE_PAUSE_SET_FLAG)
+	SOUP_MESSAGE_NO_IO_PAUSE       = (1 << 7)
+//#endif
 } SoupMessageFlags;
 
 void             soup_message_set_flags           (SoupMessage           *msg,
@@ -152,10 +157,10 @@ guint          soup_message_add_status_code_handler (
 /*
  * Status Setting
  */
-void           soup_message_set_status          (SoupMessage       *msg, 
+void           soup_message_set_status          (SoupMessage       *msg,
 						 guint              status_code);
 
-void           soup_message_set_status_full     (SoupMessage       *msg, 
+void           soup_message_set_status_full     (SoupMessage       *msg,
 						 guint              status_code, 
 						 const char        *reason_phrase);
 

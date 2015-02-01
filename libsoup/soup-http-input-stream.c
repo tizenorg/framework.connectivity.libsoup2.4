@@ -26,10 +26,20 @@
 #include <glib.h>
 #include <gio/gio.h>
 
+#define LIBSOUP_USE_UNSTABLE_REQUEST_API
+
 #include "soup-http-input-stream.h"
 #include "soup-headers.h"
 #include "soup-content-sniffer.h"
 #include "soup-session.h"
+#include "TIZEN.h"
+#if ENABLE(TIZEN_UPDATE_CACHE_ENTRY_CONTENT_TYPE_HEADER)
+#include "soup-cache-private.h"
+#endif
+#if ENABLE(TIZEN_DLOG)
+#include "soup-message.h"
+#include "soup-uri.h"
+#endif
 
 G_DEFINE_TYPE (SoupHTTPInputStream, soup_http_input_stream, G_TYPE_INPUT_STREAM)
 
@@ -244,6 +254,9 @@ soup_http_input_stream_content_sniffed (SoupMessage *msg, const char *content_ty
 {
 	SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (stream);
 	GString *sniffed_type;
+#if ENABLE(TIZEN_UPDATE_CACHE_ENTRY_CONTENT_TYPE_HEADER)
+	SoupCache *cache;
+#endif
 
 	sniffed_type = g_string_new (content_type);
 	if (params) {
@@ -258,6 +271,12 @@ soup_http_input_stream_content_sniffed (SoupMessage *msg, const char *content_ty
 	}
 	g_free (priv->sniffed_content_type);
 	priv->sniffed_content_type = g_string_free (sniffed_type, FALSE);
+#if ENABLE(TIZEN_UPDATE_CACHE_ENTRY_CONTENT_TYPE_HEADER)
+	if (priv->sniffed_content_type && msg->status_code != SOUP_STATUS_NOT_MODIFIED) {
+	    cache = (SoupCache *)soup_session_get_feature (priv->session, SOUP_TYPE_CACHE);
+	    soup_cache_entry_update_content_type (cache, msg, (const char *)priv->sniffed_content_type);
+	}
+#endif
 
 	soup_http_input_stream_got_headers (msg, stream);
 }
@@ -556,6 +575,15 @@ send_async_finished (GInputStream *stream)
 	if (!g_cancellable_set_error_if_cancelled (priv->cancellable, &error))
 		set_error_if_http_failed (priv->msg, &error);
 
+#if ENABLE(TIZEN_DLOG)
+	if (error) {
+		char *uri = soup_uri_to_string(soup_message_get_uri(priv->msg), FALSE);
+		TIZEN_LOGD ("msg[%p] error code[%d]", priv->msg, error->code);
+		TIZEN_SECURE_LOGD ("url [%s] GError [%s]", uri, error->message);
+		g_free(uri);
+	}
+#endif
+
 	priv->got_headers_cb = NULL;
 	priv->finished_cb = NULL;
 	soup_http_input_stream_done_io (stream);
@@ -631,6 +659,46 @@ soup_http_input_stream_send_async (SoupHTTPInputStream *httpstream,
 						    callback, user_data);
 }
 
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+void
+soup_http_input_stream_send_async_without_queue_message (SoupHTTPInputStream *httpstream,
+				   int                  io_priority,
+				   GCancellable        *cancellable,
+				   GAsyncReadyCallback  callback,
+				   gpointer             user_data)
+{
+	GInputStream *istream = (GInputStream *)httpstream;
+	SoupHTTPInputStreamPrivate *priv;
+	GError *error = NULL;
+
+	g_return_if_fail (SOUP_IS_HTTP_INPUT_STREAM (httpstream));
+
+	priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (httpstream);
+
+	priv->got_headers = priv->finished = FALSE;
+
+	if (soup_session_get_feature_for_message (priv->session, SOUP_TYPE_CONTENT_SNIFFER, priv->msg)) {
+		g_signal_connect (priv->msg, "content_sniffed",
+					G_CALLBACK (soup_http_input_stream_content_sniffed), httpstream);
+	} else {
+		g_signal_connect (priv->msg, "got_headers",
+					G_CALLBACK (soup_http_input_stream_got_headers), httpstream);
+	}
+	g_signal_connect (priv->msg, "got_chunk",
+				G_CALLBACK (soup_http_input_stream_got_chunk), httpstream);
+	g_signal_connect (priv->msg, "restarted",
+				G_CALLBACK (soup_http_input_stream_restarted), httpstream);
+	g_signal_connect (priv->msg, "finished",
+				G_CALLBACK (soup_http_input_stream_finished), httpstream);
+
+	if (!g_input_stream_set_pending (istream, &error)) {
+		g_simple_async_report_take_gerror_in_idle (G_OBJECT (httpstream), callback, user_data, error);
+		return;
+	}
+	soup_http_input_stream_send_async_internal (istream, io_priority, cancellable, callback, user_data);
+}
+#endif
+
 /**
  * soup_http_input_stream_send_finish:
  * @httpstream: a #SoupHTTPInputStream
@@ -656,7 +724,21 @@ soup_http_input_stream_send_finish (SoupHTTPInputStream  *httpstream,
 	g_return_val_if_fail (g_simple_async_result_get_source_tag (simple) == soup_http_input_stream_send_async, FALSE);
 
 	if (g_simple_async_result_propagate_error (simple, error))
+#if ENABLE(TIZEN_DLOG)
+	{
+		if (error) {
+			SoupHTTPInputStreamPrivate *priv = SOUP_HTTP_INPUT_STREAM_GET_PRIVATE (httpstream);
+			char *uri = soup_uri_to_string(soup_message_get_uri(priv->msg), FALSE);
+			TIZEN_LOGD ("msg[%p] error code[%d]", priv->msg, (*error)->code);
+			TIZEN_SECURE_LOGD ("url [%s] GError [%s]", uri, (*error)->message);
+			g_free(uri);
+		}
+
 		return FALSE;
+	}
+#else
+		return FALSE;
+#endif
 
 	return g_simple_async_result_get_op_res_gboolean (simple);
 }
@@ -676,6 +758,15 @@ read_async_done (GInputStream *stream)
 		g_simple_async_result_take_error (result, error);
 	else
 		g_simple_async_result_set_op_res_gssize (result, priv->caller_nread);
+
+#if ENABLE(TIZEN_DLOG)
+	if (error) {
+		char *uri = soup_uri_to_string(soup_message_get_uri(priv->msg), FALSE);
+		TIZEN_LOGD ("msg[%p] error code[%d]", priv->msg, error->code);
+		TIZEN_SECURE_LOGD ("url [%s] GError [%s]", uri, error->message);
+		g_free(uri);
+	}
+#endif
 
 	priv->got_chunk_cb = NULL;
 	priv->finished_cb = NULL;

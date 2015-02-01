@@ -14,11 +14,13 @@
 
 #include "soup-connection.h"
 #include "soup-message-private.h"
+#include "soup-message-io-spdy-private.h"
 #include "soup-auth.h"
 #include "soup-connection.h"
 #include "soup-headers.h"
 #include "soup-message-queue.h"
 #include "soup-uri.h"
+#include "TIZEN.h"
 
 static guint
 parse_response_headers (SoupMessage *req,
@@ -73,6 +75,11 @@ get_request_headers (SoupMessage *req, GString *header,
 	char *uri_string;
 	SoupMessageHeadersIter iter;
 	const char *name, *value;
+
+#if ENABLE(TIZEN_IGNORE_HOST_CHECK_FOR_TEL_SCHEME)
+	if (!uri->host)
+		return;
+#endif
 
 	if (strchr (uri->host, ':'))
 		uri_host = g_strdup_printf ("[%s]", uri->host);
@@ -142,10 +149,31 @@ soup_message_send_request (SoupMessageQueueItem      *item,
 			   SoupMessageCompletionFn    completion_cb,
 			   gpointer                   user_data)
 {
+#if ENABLE_TIZEN_SPDY
+	gboolean is_spdy;
+
+	is_spdy = soup_connection_is_spdy_protocol (item->conn);
+
+	if (is_spdy) {
+		soup_message_cleanup_response (item->msg);
+		soup_message_io_spdy_client (item,
+					parse_response_headers,
+					item,
+					completion_cb, user_data);
+	} else {
+		soup_message_cleanup_response (item->msg);
+		soup_message_io_client (item,
+					get_request_headers,
+					parse_response_headers,
+					item,
+					completion_cb, user_data);
+	}
+#else
 	soup_message_cleanup_response (item->msg);
 	soup_message_io_client (item,
 				get_request_headers,
 				parse_response_headers,
 				item,
 				completion_cb, user_data);
+#endif
 }

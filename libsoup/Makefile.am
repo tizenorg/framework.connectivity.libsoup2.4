@@ -21,6 +21,14 @@ INCLUDES +=			\
 	$(TIZEN_DLOG_CFLAGS)
 endif
 
+if TIZEN_SPDY
+INCLUDES +=			\
+	$(TIZEN_SPINDLY_CFLAGS)
+endif
+
+INCLUDES +=			\
+	$(TIZEN_ENGINEER_MODE_FLAGS)
+
 libsoupincludedir = $(includedir)/libsoup-2.4/libsoup
 
 soup_headers =			\
@@ -98,6 +106,12 @@ libsoup_2_4_la_LIBADD +=		\
 	$(TIZEN_DLOG_LIBS)
 endif
 
+# Should use $(TIZEN_SPINDLY_LIBS) instead of -lspdy, but cannot because value of $(TIZEN_SPINDLY_LIBS) is wrong.
+if TIZEN_SPDY
+libsoup_2_4_la_LIBADD +=		\
+	-lspdy
+endif
+
 libsoup_2_4_la_SOURCES =		\
 	soup-address.c			\
 	soup-auth.c			\
@@ -171,7 +185,17 @@ libsoup_2_4_la_SOURCES =		\
 	soup-status.c			\
 	soup-uri.c			\
 	soup-value-utils.c		\
+	soup-redirection-predictor.c	\
+	soup-adaptive-timeout.c	\
 	soup-xmlrpc.c
+
+if TIZEN_SPDY
+libsoup_2_4_la_SOURCES +=               \
+	soup-connection-spdy-private.h		\
+	soup-connection-spdy.c				\
+	soup-message-io-spdy-private.h		\
+	soup-message-io-spdy.c
+endif
 
 if SQLLITE_SUPPORT
 libsoup_2_4_la_SOURCES +=		\

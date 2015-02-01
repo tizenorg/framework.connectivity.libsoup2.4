@@ -31,8 +31,19 @@
 #include "soup-uri.h"
 /*TIZEN patch*/
 #include "TIZEN.h"
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+#include "soup-adaptive-timeout-private.h"
+#endif
+
+#if ENABLE (TIZEN_NOT_TO_CACHE_DNS_FOR_EMPTY_HOST)
+#include "soup-session-async.h"
+#include "soup-session-sync.h"
+#endif
 
 #define HOST_KEEP_ALIVE 5 * 60 * 1000 /* 5 min in msecs */
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+#define SET_TLS_CERT_FILE_TIMEOUT 7 * 1000 /* msecs */
+#endif
 
 /**
  * SECTION:soup-session
@@ -110,7 +121,18 @@ typedef struct {
 
 	char **http_aliases, **https_aliases;
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	GSource *tls_idle_timeout_src;
 	char *certificate_path;
+#endif
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	GHashTable *dead_link_table;
+#endif
+
+#if ENABLE_TIZEN_SPDY
+	gboolean is_spdy_allowed;
+#endif
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	gboolean is_redirection_predictor_allowed;
 #endif
 } SoupSessionPrivate;
 #define SOUP_SESSION_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SESSION, SoupSessionPrivate))
@@ -177,9 +199,23 @@ enum {
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
 	PROP_CERTIFICATE_PATH,
 #endif
-
+#if ENABLE_TIZEN_SPDY
+	PROP_ALLOW_SPDY,
+#endif
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	PROP_ALLOW_REDIRECTION_PREDICTOR,
+#endif
 	LAST_PROP
 };
+
+#if ENABLE_TIZEN_SPDY
+static const char *spdy_blacklist[] = {
+	"https://mobile.twitter.com/api/scribe",
+	"ups.com",
+	"netflix.com",
+	NULL
+};
+#endif
 
 static void set_property (GObject *object, guint prop_id,
 			  const GValue *value, GParamSpec *pspec);
@@ -208,6 +244,10 @@ soup_session_init (SoupSession *session)
 
 	priv->features_cache = g_hash_table_new (NULL, NULL);
 
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	priv->dead_link_table = g_hash_table_new(g_str_hash, g_str_equal);
+#endif
+
 	auth_manager = g_object_new (SOUP_TYPE_AUTH_MANAGER_NTLM, NULL);
 	g_signal_connect (auth_manager, "authenticate",
 			  G_CALLBACK (auth_manager_authenticate), session);
@@ -228,6 +268,10 @@ soup_session_init (SoupSession *session)
 	priv->http_aliases = g_new (char *, 2);
 	priv->http_aliases[0] = (char *)g_intern_string ("*");
 	priv->http_aliases[1] = NULL;
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	priv->tls_idle_timeout_src = NULL;
+	priv->certificate_path = NULL;
+#endif
 }
 
 static void
@@ -269,12 +313,19 @@ finalize (GObject *object)
 
 	g_hash_table_destroy (priv->features_cache);
 
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	g_hash_table_destroy (priv->dead_link_table);
+	soup_adaptive_timeout_close_db();
+#endif
+
 	g_object_unref (priv->resolver);
 
 	g_free (priv->http_aliases);
 	g_free (priv->https_aliases);
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	soup_session_tls_stop_idle_timer (session);
 	g_free (priv->certificate_path);
+	priv->certificate_path = NULL;
 #endif
 
 	G_OBJECT_CLASS (soup_session_parent_class)->finalize (object);
@@ -989,6 +1040,26 @@ soup_session_class_init (SoupSessionClass *session_class)
 				      NULL,
 				      G_PARAM_READWRITE));
 #endif
+
+#if ENABLE_TIZEN_SPDY
+	g_object_class_install_property (
+		object_class, PROP_ALLOW_SPDY,
+		g_param_spec_boolean (SOUP_SESSION_ALLOW_SPDY,
+				      "flag to decide to allow spdy or not",
+				      "Set TRUE if want to use spdy feature",
+				      FALSE,
+				      G_PARAM_READWRITE));
+#endif
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	g_object_class_install_property (
+		object_class, PROP_ALLOW_REDIRECTION_PREDICTOR,
+		g_param_spec_boolean (SOUP_SESSION_ALLOW_REDIRECTION_PREDICTOR,
+					"flag to decide to allow redirection predictor or not",
+					"Set TRUE if want to use redirection predictor feature",
+					FALSE,
+					G_PARAM_READWRITE));
+#endif
 }
 
 /* Converts a language in POSIX format and to be RFC2616 compliant    */
@@ -1188,6 +1259,41 @@ set_aliases (char ***variable, char **value)
 	(*variable)[i] = NULL;
 }
 
+#if ENABLE(TIZEN_FILTER_INVALID_PROXY_ADDR)
+static gboolean
+uri_is_valid_proxy_address (SoupURI *uri)
+{
+	gboolean ret = TRUE;
+	int i = 0;
+	char *str_uri = soup_uri_to_string(uri, FALSE);
+
+	static const char *invalid_proxy_addresses[] = {
+			"0.0.0.0",
+			"http:///",
+			NULL
+	};
+
+	while (NULL != invalid_proxy_addresses[i]) {
+		if (g_strrstr(str_uri, invalid_proxy_addresses[i])) {
+				ret = FALSE;
+				break;
+		}
+		i++;
+	}
+
+#if ENABLE(TIZEN_DLOG)
+	if (!ret) {
+		TIZEN_LOGD ("proxy is filtered out.");
+		TIZEN_SECURE_LOGD ("proxy [%s] is filtered out.", str_uri);
+	}
+#endif
+
+	g_free(str_uri);
+
+	return ret;
+}
+#endif
+
 static void
 set_property (GObject *object, guint prop_id,
 	      const GValue *value, GParamSpec *pspec)
@@ -1202,7 +1308,21 @@ set_property (GObject *object, guint prop_id,
 	case PROP_PROXY_URI:
 		uri = g_value_get_boxed (value);
 
+#if ENABLE(TIZEN_DLOG)
 		if (uri) {
+			char *str_uri = soup_uri_to_string(uri, FALSE);
+			TIZEN_SECURE_LOGD ("proxy [%s]", str_uri);
+			g_free(str_uri);
+		} else {
+			TIZEN_LOGD ("There is no uri for proxy");
+		}
+#endif
+
+#if ENABLE(TIZEN_FILTER_INVALID_PROXY_ADDR)
+		if (uri && uri_is_valid_proxy_address (uri)) {
+#else
+		if (uri) {
+#endif
 			soup_session_remove_feature_by_type (session, SOUP_TYPE_PROXY_RESOLVER);
 			feature = SOUP_SESSION_FEATURE (soup_proxy_resolver_static_new (uri));
 			soup_session_add_feature (session, feature);
@@ -1313,10 +1433,26 @@ set_property (GObject *object, guint prop_id,
 			g_free (priv->certificate_path);
 			priv->certificate_path = NULL;
 		}
-		priv->certificate_path = g_strdup (g_value_get_string (value));
+		if (g_value_get_string (value) && strlen (g_value_get_string (value)))
+			priv->certificate_path = g_strdup (g_value_get_string (value));
 #if ENABLE(TIZEN_DLOG)
-		TIZEN_LOGE("set_property() PROP_CERTIFICATE_PATH priv->certificate_path is set [%s]", priv->certificate_path);
+		TIZEN_LOGD ("set_property() PROP_CERTIFICATE_PATH priv->certificate_path is set");
+		TIZEN_SECURE_LOGD ("set_property() PROP_CERTIFICATE_PATH priv->certificate_path is set [%s]", priv->certificate_path);
 #endif
+		if (priv->certificate_path)
+			soup_session_tls_start_idle_timer(session, SET_TLS_CERT_FILE_TIMEOUT);
+		break;
+#endif
+#if ENABLE_TIZEN_SPDY
+	case PROP_ALLOW_SPDY:
+		priv->is_spdy_allowed = g_value_get_boolean (value);
+		TIZEN_LOGD ("is_spdy_allowed [%d]", priv->is_spdy_allowed);
+		break;
+#endif
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	case PROP_ALLOW_REDIRECTION_PREDICTOR:
+		priv->is_redirection_predictor_allowed = g_value_get_boolean (value);
+		TIZEN_LOGD ("is_redirection_predictor_allowed [%d]", priv->is_redirection_predictor_allowed);
 		break;
 #endif
 	default:
@@ -1401,9 +1537,19 @@ get_property (GObject *object, guint prop_id,
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
         case PROP_CERTIFICATE_PATH:
 #if ENABLE(TIZEN_DLOG)
-		TIZEN_LOGE("get_property() PROP_CERTIFICATE_PATH");
+		TIZEN_LOGD ("get_property() PROP_CERTIFICATE_PATH");
 #endif
 		g_value_set_string (value, priv->certificate_path);
+		break;
+#endif
+#if ENABLE_TIZEN_SPDY
+	case PROP_ALLOW_SPDY:
+		g_value_set_boolean (value, priv->is_spdy_allowed);
+		break;
+#endif
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	case PROP_ALLOW_REDIRECTION_PREDICTOR:
+		g_value_set_boolean (value, priv->is_redirection_predictor_allowed);
 		break;
 #endif
 	default:
@@ -1589,6 +1735,34 @@ free_host (SoupSessionHost *host)
 	g_slice_free (SoupSessionHost, host);
 }
 
+#if ENABLE_TIZEN_SPDY
+static gboolean
+is_blacklisted_for_spdy (SoupSession *session, SoupURI *uri)
+{
+	char *url_str = NULL;
+	SoupSessionPrivate *priv = SOUP_SESSION_GET_PRIVATE (session);
+	int i = 0;
+	gboolean result = FALSE;
+
+	if (!session || !priv || !uri)
+		return FALSE;
+
+	url_str = soup_uri_to_string (uri, FALSE);
+	if (!url_str)
+		return FALSE;
+
+	while (spdy_blacklist[i] != NULL) {
+		if (g_strrstr(url_str, spdy_blacklist[i]))
+			result = TRUE;
+		++i;
+	}
+
+	g_free (url_str);
+
+	return result;
+}
+#endif
+
 static void
 auth_required (SoupSession *session, SoupMessage *msg,
 	       SoupAuth *auth, gboolean retrying)
@@ -1623,19 +1797,35 @@ auth_manager_authenticate (SoupAuthManager *manager, SoupMessage *msg,
 					   method == SOUP_METHOD_PUT || \
 					   method == SOUP_METHOD_DELETE)
 
-
+#if ENABLE(TIZEN_HANDLING_307_REDIRECTION)
+#define SOUP_SESSION_WOULD_REDIRECT_AS_GET(session, msg) \
+	((msg)->status_code == SOUP_STATUS_SEE_OTHER || \
+	 ((msg)->status_code == SOUP_STATUS_FOUND && \
+	  !SOUP_METHOD_IS_SAFE ((msg)->method)) || \
+	 ((msg)->status_code == SOUP_STATUS_TEMPORARY_REDIRECT && \
+	  (msg)->method == SOUP_METHOD_GET) || \
+	 ((msg)->status_code == SOUP_STATUS_MOVED_PERMANENTLY && \
+	  (msg)->method == SOUP_METHOD_POST))
+#else
 #define SOUP_SESSION_WOULD_REDIRECT_AS_GET(session, msg) \
 	((msg)->status_code == SOUP_STATUS_SEE_OTHER || \
 	 ((msg)->status_code == SOUP_STATUS_FOUND && \
 	  !SOUP_METHOD_IS_SAFE ((msg)->method)) || \
 	 ((msg)->status_code == SOUP_STATUS_MOVED_PERMANENTLY && \
 	  (msg)->method == SOUP_METHOD_POST))
+#endif
 
 #define SOUP_SESSION_WOULD_REDIRECT_AS_SAFE(session, msg) \
 	(((msg)->status_code == SOUP_STATUS_MOVED_PERMANENTLY || \
 	  (msg)->status_code == SOUP_STATUS_TEMPORARY_REDIRECT || \
 	  (msg)->status_code == SOUP_STATUS_FOUND) && \
 	 SOUP_METHOD_IS_SAFE ((msg)->method))
+
+#if ENABLE(TIZEN_HANDLING_307_REDIRECTION)
+#define SOUP_SESSION_WOULD_REDIRECT_AS_POST(session, msg) \
+        ((msg)->status_code == SOUP_STATUS_TEMPORARY_REDIRECT && \
+         (msg)->method == SOUP_METHOD_POST)
+#endif
 
 static inline SoupURI *
 redirection_uri (SoupMessage *msg)
@@ -1648,6 +1838,12 @@ redirection_uri (SoupMessage *msg)
 	if (!new_loc)
 		return NULL;
 	new_uri = soup_uri_new_with_base (soup_message_get_uri (msg), new_loc);
+
+#if ENABLE(TIZEN_IGNORE_HOST_CHECK_FOR_TEL_SCHEME)
+	if (new_uri && new_uri->scheme == SOUP_URI_SCHEME_TEL)
+		return new_uri;
+#endif
+
 	if (!new_uri || !new_uri->host) {
 		if (new_uri)
 			soup_uri_free (new_uri);
@@ -1678,8 +1874,12 @@ soup_session_would_redirect (SoupSession *session, SoupMessage *msg)
 
 	/* It must have an appropriate status code and method */
 	if (!SOUP_SESSION_WOULD_REDIRECT_AS_GET (session, msg) &&
-	    !SOUP_SESSION_WOULD_REDIRECT_AS_SAFE (session, msg))
-		return FALSE;
+	    !SOUP_SESSION_WOULD_REDIRECT_AS_SAFE (session, msg)
+#if ENABLE(TIZEN_HANDLING_307_REDIRECTION)
+	    && !SOUP_SESSION_WOULD_REDIRECT_AS_POST (session, msg)
+#endif
+          )
+               return FALSE;
 
 	/* and a Location header that parses to an http URI */
 	if (!soup_message_headers_get_one (msg->response_headers, "Location"))
@@ -1687,6 +1887,14 @@ soup_session_would_redirect (SoupSession *session, SoupMessage *msg)
 	new_uri = redirection_uri (msg);
 	if (!new_uri)
 		return FALSE;
+
+#if ENABLE(TIZEN_IGNORE_HOST_CHECK_FOR_TEL_SCHEME)
+	if (new_uri->scheme == SOUP_URI_SCHEME_TEL) {
+		soup_uri_free (new_uri);
+		return TRUE;
+	}
+#endif
+
 	if (!new_uri->host || !*new_uri->host ||
 	    (!uri_is_http (priv, new_uri) && !uri_is_https (priv, new_uri))) {
 		soup_uri_free (new_uri);
@@ -1756,7 +1964,6 @@ soup_session_redirect_message (SoupSession *session, SoupMessage *msg)
 		soup_message_headers_set_encoding (msg->request_headers,
 						   SOUP_ENCODING_NONE);
 	}
-
 	soup_message_set_uri (msg, new_uri);
 	soup_uri_free (new_uri);
 
@@ -1866,7 +2073,23 @@ static gboolean
 free_unused_host (gpointer user_data)
 {
 	SoupSessionHost *host = (SoupSessionHost *) user_data;
+#if ENABLE (TIZEN_NOT_TO_CACHE_DNS_FOR_EMPTY_HOST)
+	SoupSessionPrivate *priv = NULL;
+
+	if (!SOUP_SESSION(host->session)) {
+		TIZEN_LOGD ("host[%p] host->session[%p] is not a SOUP_SESSSION", host, host->session);
+		return FALSE;
+	}
+
+	if (!SOUP_SESSION_GET_PRIVATE(host->session)) {
+		TIZEN_LOGD ("host[%p] host->session[%p] SOUP_SESSION_GET_PRIVATE is invalid", host, host->session);
+		return FALSE;
+	}
+
+	priv = SOUP_SESSION_GET_PRIVATE (host->session);
+#else
 	SoupSessionPrivate *priv = SOUP_SESSION_GET_PRIVATE (host->session);
+#endif
 
 	g_mutex_lock (&priv->host_lock);
 	/* This will free the host in addition to removing it from the
@@ -1902,10 +2125,24 @@ connection_disconnected (SoupConnection *conn, gpointer user_data)
 		 */
 		if (host->num_conns == 0) {
 			g_assert (host->keep_alive_src == NULL);
+#if ENABLE (TIZEN_NOT_TO_CACHE_DNS_FOR_EMPTY_HOST)
+			if (SOUP_IS_SESSION_ASYNC (session)) {
+				host->keep_alive_src = soup_add_timeout (priv->async_context,
+									 0,
+									 free_unused_host,
+									 host);
+			} else if (SOUP_IS_SESSION_SYNC (session)) {
+				host->keep_alive_src = soup_add_timeout (priv->async_context,
+									 HOST_KEEP_ALIVE,
+									 free_unused_host,
+									 host);
+			}
+#else
 			host->keep_alive_src = soup_add_timeout (priv->async_context,
 								 HOST_KEEP_ALIVE,
 								 free_unused_host,
 								 host);
+#endif
 			host->keep_alive_src = g_source_ref (host->keep_alive_src);
 		}
 
@@ -1966,6 +2203,13 @@ soup_session_get_connection (SoupSession *session,
 	int num_pending = 0;
 	SoupURI *uri;
 	gboolean need_new_connection;
+#if ENABLE_TIZEN_SPDY
+	gboolean is_spdy = FALSE;
+	gboolean is_msg_using_sync_context = FALSE;
+	gboolean is_blacklisted = FALSE;
+	gboolean need_to_wait_for_server_response_for_spdy = TRUE;
+	guint count_disconnected_conn = 0;
+#endif
 
 	if (item->conn) {
 		g_return_val_if_fail (soup_connection_get_state (item->conn) != SOUP_CONNECTION_DISCONNECTED, FALSE);
@@ -1978,25 +2222,119 @@ soup_session_get_connection (SoupSession *session,
 
 	g_mutex_lock (&priv->host_lock);
 
+#if ENABLE_TIZEN_SPDY
+	is_blacklisted = is_blacklisted_for_spdy (session, soup_message_get_uri (item->msg));
+	is_msg_using_sync_context = soup_message_is_using_sync_context(item->msg);
+#endif
+
 	host = get_host_for_message (session, item->msg);
-	for (conns = host->connections; conns; conns = conns->next) {
-		if (!need_new_connection && soup_connection_get_state (conns->data) == SOUP_CONNECTION_IDLE) {
-			soup_connection_set_state (conns->data, SOUP_CONNECTION_IN_USE);
-			g_mutex_unlock (&priv->host_lock);
-			soup_message_queue_item_set_connection (item, conns->data);
-			soup_message_set_https_status (item->msg, item->conn);
-			return TRUE;
-		} else if (soup_connection_get_state (conns->data) == SOUP_CONNECTION_CONNECTING)
-			num_pending++;
+
+#if ENABLE_TIZEN_SPDY
+	if (soup_message_get_flags (item->msg) & SOUP_MESSAGE_NEW_CONNECTION) {
+		TIZEN_LOGD ("goto need_new_connection session[%p] item[%p] msg[%p]", session, item, item->msg);
+		is_blacklisted = TRUE;
+		goto create_new_connection;
 	}
+#endif
+
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy_allowed) {
+		conns = host->connections;
+
+		for (; conns; conns = conns->next) {
+			conn = conns->data;
+
+			is_spdy = soup_connection_is_spdy_protocol(conn);
+
+			switch (soup_connection_get_state (conn)) {
+			case SOUP_CONNECTION_IDLE:
+				if (!need_new_connection || (is_spdy && !is_msg_using_sync_context && !is_blacklisted)) {
+					soup_connection_set_state (conn, SOUP_CONNECTION_IN_USE);
+					g_mutex_unlock (&priv->host_lock);
+					soup_message_queue_item_set_connection (item, conn);
+					soup_message_set_https_status (item->msg, item->conn);
+					return TRUE;
+				}
+
+				need_to_wait_for_server_response_for_spdy = FALSE;
+
+				break;
+
+			case SOUP_CONNECTION_IN_USE:
+				if (is_spdy && !is_msg_using_sync_context && !is_blacklisted) {
+					g_mutex_unlock (&priv->host_lock);
+					soup_message_queue_item_set_connection (item, conn);
+					soup_message_set_https_status (item->msg, item->conn);
+					return TRUE;
+				}
+
+				need_to_wait_for_server_response_for_spdy = FALSE;
+
+				break;
+
+			case SOUP_CONNECTION_CONNECTING:
+					num_pending++;
+				break;
+
+			case SOUP_CONNECTION_REMOTE_DISCONNECTED:
+			case SOUP_CONNECTION_DISCONNECTED:
+				if (is_spdy && !is_msg_using_sync_context && !is_blacklisted)
+					count_disconnected_conn++;
+				else
+					need_to_wait_for_server_response_for_spdy = FALSE;
+
+				break;
+
+			case SOUP_CONNECTION_NEW:
+			default:
+				// should not reach
+				break;
+			}
+		}
+
+		if (!uri_is_https (priv, soup_message_get_uri (item->msg)) ||
+				!host->connections ||
+				(g_slist_length (host->connections) == count_disconnected_conn))
+			need_to_wait_for_server_response_for_spdy = FALSE;
+
+	} else
+#endif /* ENABLE_TIZEN_SPDY */
+	{
+		for (conns = host->connections; conns; conns = conns->next) {
+			if ((!need_new_connection && soup_connection_get_state (conns->data) == SOUP_CONNECTION_IDLE)) {
+				soup_connection_set_state (conns->data, SOUP_CONNECTION_IN_USE);
+				g_mutex_unlock (&priv->host_lock);
+				soup_message_queue_item_set_connection (item, conns->data);
+				soup_message_set_https_status (item->msg, item->conn);
+				return TRUE;
+			} else if (soup_connection_get_state (conns->data) == SOUP_CONNECTION_CONNECTING)
+				num_pending++;
+		}
+	} // end of priv->is_spdy_allowed
+
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy_allowed &&
+			need_to_wait_for_server_response_for_spdy) {
+		g_mutex_unlock (&priv->host_lock);
+		return FALSE;
+	}
+#endif
+
+#if ENABLE_TIZEN_SPDY
+create_new_connection:
+#endif
 
 	/* Limit the number of pending connections; num_messages / 2
 	 * is somewhat arbitrary...
 	 */
+#if ENABLE(TIZEN_UNLIMITED_PENDING_CONNECTIONS)
+	/* FIXME: What should we do here exactly? */
+#else
 	if (num_pending > host->num_messages / 2) {
 		g_mutex_unlock (&priv->host_lock);
 		return FALSE;
 	}
+#endif
 
 	if (host->num_conns >= priv->max_conns_per_host) {
 		if (need_new_connection)
@@ -2035,6 +2373,9 @@ soup_session_get_connection (SoupSession *session,
 		SOUP_CONNECTION_TIMEOUT, priv->io_timeout,
 		SOUP_CONNECTION_IDLE_TIMEOUT, priv->idle_timeout,
 		SOUP_CONNECTION_SSL_FALLBACK, host->ssl_fallback,
+#if ENABLE_TIZEN_SPDY
+		SOUP_CONNECTION_ALLOW_SPDY, priv->is_spdy_allowed && !is_msg_using_sync_context && !is_blacklisted ,
+#endif
 		NULL);
 	g_signal_connect (conn, "disconnected",
 			  G_CALLBACK (connection_disconnected),
@@ -2168,7 +2509,6 @@ queue_message (SoupSession *session, SoupMessage *msg,
 			msg, "got_body", "Location",
 			G_CALLBACK (redirect_handler), item);
 	}
-
 	g_signal_emit (session, signals[REQUEST_QUEUED], 0, msg);
 }
 
@@ -2189,7 +2529,7 @@ queue_message (SoupSession *session, SoupMessage *msg,
  * @callback: (allow-none) (scope async): a #SoupSessionCallback which will
  * be called after the message completes or when an unrecoverable error occurs.
  * @user_data: (allow-none): a pointer passed to @callback.
- * 
+ *
  * Queues the message @msg for sending. All messages are processed
  * while the glib main loop runs. If @msg has been processed before,
  * any resources related to the time it was last sent are freed.
@@ -2244,7 +2584,7 @@ soup_session_requeue_message (SoupSession *session, SoupMessage *msg)
  * soup_session_send_message:
  * @session: a #SoupSession
  * @msg: the message to send
- * 
+ *
  * Synchronously send @msg. This call will not return until the
  * transfer is finished successfully or there is an unrecoverable
  * error.
@@ -2286,8 +2626,17 @@ soup_session_pause_message (SoupSession *session,
 	g_return_if_fail (item != NULL);
 
 	item->paused = TRUE;
+
+/* FIXME: Workaround patch to resolve slow loading issue(P130910-02494) because of many resources having same host. */
+#if ENABLE(TIZEN_SOUP_MESSAGE_PAUSE_SET_FLAG)
+	if (!(soup_message_get_flags(msg) & SOUP_MESSAGE_NO_IO_PAUSE)) {
+		if (item->state == SOUP_MESSAGE_RUNNING)
+			soup_message_io_pause (msg);
+	}
+#else
 	if (item->state == SOUP_MESSAGE_RUNNING)
 		soup_message_io_pause (msg);
+#endif
 	soup_message_queue_item_unref (item);
 }
 
@@ -2318,8 +2667,16 @@ soup_session_unpause_message (SoupSession *session,
 	g_return_if_fail (item != NULL);
 
 	item->paused = FALSE;
+/* FIXME: Workaround patch to resolve slow loading issue(P130910-02494) because of many resources having same host. */
+#if ENABLE(TIZEN_SOUP_MESSAGE_PAUSE_SET_FLAG)
+	if (!(soup_message_get_flags(msg) & SOUP_MESSAGE_NO_IO_PAUSE)) {
+		if (item->state == SOUP_MESSAGE_RUNNING)
+			soup_message_io_unpause (msg);
+	}
+#else
 	if (item->state == SOUP_MESSAGE_RUNNING)
 		soup_message_io_unpause (msg);
+#endif
 	soup_message_queue_item_unref (item);
 
 	SOUP_SESSION_GET_CLASS (session)->kick (session);
@@ -2779,25 +3136,29 @@ soup_session_get_feature_for_message (SoupSession *session, GType feature_type,
 }
 
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
-void soup_session_set_certificate_file(SoupSession *session, SoupMessageQueueItem *item)
+void soup_session_set_certificate_file(SoupSession *session)
 {
 	SoupSessionPrivate *priv = SOUP_SESSION_GET_PRIVATE (session);
-	SoupURI *uri;
 
-	if (!priv->certificate_path)
+	TIZEN_LOGD ("");
+	if (!priv->certificate_path) {
+		TIZEN_LOGD("priv->certificate_path is NULL, return!!");
 		return;
+	}
 
-	uri = soup_message_get_uri (item->msg);
+	if (!priv->tlsdb) {
 
-	if (uri_is_https (priv, uri) && (!priv->tlsdb)) {
 		GError* error = NULL;
-		GTlsDatabase* tlsdb = g_tls_file_database_new(priv->certificate_path, &error);
-#if ENABLE(TIZEN_DLOG)
-                TIZEN_LOGE("g_tls_file_database_new() is called. [%s]", priv->certificate_path);
-#endif
+		GTlsDatabase* tlsdb = NULL;
+
+		TIZEN_LOGD ("g_tls_file_database_new() is called. START");
+		tlsdb = g_tls_file_database_new(priv->certificate_path, &error);
+		TIZEN_LOGD ("g_tls_file_database_new() is called. END");
+		TIZEN_SECURE_LOGD ("g_tls_file_database_new() is called. [%s]", priv->certificate_path);
+
 		if (!error && tlsdb) {
 #if ENABLE(TIZEN_DLOG)
-			TIZEN_LOGE("g_tls_file_database_new() is success. no error call set_tlsdb().");
+			TIZEN_LOGD ("g_tls_file_database_new() is success. no error call set_tlsdb().");
 #endif
 			set_tlsdb (session, tlsdb);
 		}
@@ -2809,5 +3170,95 @@ void soup_session_set_certificate_file(SoupSession *session, SoupMessageQueueIte
 			priv->certificate_path = NULL;
 		}
        }
+}
+#endif
+
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+void soup_adaptive_timeout_set_dead_link_running_status(SoupSession *session, char *host, gboolean is_probing)
+{
+	SoupSessionPrivate *session_priv;
+	char *value = NULL;
+
+	session_priv = SOUP_SESSION_GET_PRIVATE(session);
+	value = g_hash_table_lookup(session_priv->dead_link_table, host);
+
+	if(value != NULL) {
+		if(is_probing)
+			g_hash_table_replace(session_priv->dead_link_table, host, "1");
+	}
+	else {
+		if(is_probing)
+			g_hash_table_insert(session_priv->dead_link_table, host, "1");
+	}
+}
+
+int  soup_adaptive_timeout_get_dead_link_running_status(SoupSession *session, char *host)
+{
+	SoupSessionPrivate *session_priv;
+	char *value = NULL;
+	int isRunning = 0;
+
+	session_priv = SOUP_SESSION_GET_PRIVATE(session);
+	value = g_hash_table_lookup(session_priv->dead_link_table, host);
+
+	if(value != NULL)
+		isRunning = atoi(value);
+
+	return isRunning;
+}
+
+void soup_adaptive_timeout_remove_dead_link(SoupSession *session, char *host)
+{
+	SoupSessionPrivate *session_priv;
+
+	session_priv = SOUP_SESSION_GET_PRIVATE(session);
+	g_hash_table_remove(session_priv->dead_link_table, host);
+}
+#endif
+
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+static gboolean
+set_tls_certificate_file (gpointer session)
+{
+	TIZEN_LOGD ("");
+	soup_session_set_certificate_file(session);
+
+	return FALSE;
+}
+
+void
+soup_session_tls_start_idle_timer (SoupSession *session, guint idle_timeout)
+{
+	SoupSessionPrivate *priv = SOUP_SESSION_GET_PRIVATE (session);
+
+	TIZEN_LOGD ("timeout[%d]", idle_timeout);
+	if (priv && idle_timeout > 0 && !priv->tls_idle_timeout_src) {
+		priv->tls_idle_timeout_src =
+			soup_add_timeout (priv->async_context,
+					  idle_timeout,
+					  set_tls_certificate_file, session);
+	}
+}
+
+void
+soup_session_tls_stop_idle_timer (SoupSession *session)
+{
+	SoupSessionPrivate *priv = SOUP_SESSION_GET_PRIVATE (session);
+
+	TIZEN_LOGD ("");
+	if (priv && priv->tls_idle_timeout_src) {
+		if (!g_source_is_destroyed (priv->tls_idle_timeout_src))
+			g_source_destroy (priv->tls_idle_timeout_src);
+		priv->tls_idle_timeout_src = NULL;
+	}
+}
+
+gboolean
+soup_session_is_tls_db_initialized (SoupSession *session)
+{
+	SoupSessionPrivate *priv = SOUP_SESSION_GET_PRIVATE (session);
+	if (priv && priv->tlsdb)
+		return TRUE;
+	return FALSE;
 }
 #endif

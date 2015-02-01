@@ -5,6 +5,10 @@
  * Copyright (C) 2000-2003, Ximian, Inc.
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,6 +22,7 @@
 #include "soup-misc.h"
 #include "soup-socket.h"
 #include "soup-uri.h"
+#include "TIZEN.h"
 
 /**
  * SECTION:soup-message
@@ -106,12 +111,11 @@ enum {
 
 	RESTARTED,
 	FINISHED,
-
-	NETWORK_EVENT,
 /* #if ENABLE(TIZEN_ON_AUTHENTICATION_REQUESTED) */
 	AUTHENTICATE,
 /* #endif */
 
+	NETWORK_EVENT,
 	LAST_SIGNAL
 };
 
@@ -134,7 +138,9 @@ enum {
 	PROP_RESPONSE_HEADERS,
 	PROP_TLS_CERTIFICATE,
 	PROP_TLS_ERRORS,
-
+//#if ENABLE_TIZEN_SPDY
+	PROP_SYNC_CONTEXT,
+//#endif
 	LAST_PROP
 };
 
@@ -727,7 +733,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 * The #GTlsCertificate associated with the message
 	 *
 	 * Since: 2.34
-	 */	 
+	 */
 	g_object_class_install_property (
 		object_class, PROP_TLS_CERTIFICATE,
 		g_param_spec_object (SOUP_MESSAGE_TLS_CERTIFICATE,
@@ -749,7 +755,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 * The verification errors on #SoupMessage:tls-certificate
 	 *
 	 * Since: 2.34
-	 */	 
+	 */
 	g_object_class_install_property (
 		object_class, PROP_TLS_ERRORS,
 		g_param_spec_flags (SOUP_MESSAGE_TLS_ERRORS,
@@ -757,6 +763,16 @@ soup_message_class_init (SoupMessageClass *message_class)
 				    "The verification errors on the message's TLS certificate",
 				    G_TYPE_TLS_CERTIFICATE_FLAGS, 0,
 				    G_PARAM_READWRITE));
+
+//#if ENABLE_TIZEN_SPDY
+	g_object_class_install_property (
+		object_class, PROP_SYNC_CONTEXT,
+		g_param_spec_boolean (SOUP_MESSAGE_USE_SYNC_CONTEXT,
+				    "flag to decide to msg sync or not",
+				    "Set TRUE if want to use sync context",
+				    TRUE,
+				    G_PARAM_READWRITE));
+//#endif
 }
 
 static void
@@ -812,6 +828,12 @@ set_property (GObject *object, guint prop_id,
 		else if (priv->tls_certificate)
 			priv->msg_flags |= SOUP_MESSAGE_CERTIFICATE_TRUSTED;
 		break;
+//#if ENABLE_TIZEN_SPDY
+	case PROP_SYNC_CONTEXT:
+		priv->is_sync_context = g_value_get_boolean (value);
+		TIZEN_LOGD ("is_sync_context for msg[%p] allowed[%d]", msg, priv->is_sync_context);
+		break;
+//#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -868,6 +890,11 @@ get_property (GObject *object, guint prop_id,
 	case PROP_TLS_ERRORS:
 		g_value_set_flags (value, priv->tls_errors);
 		break;
+//#if ENABLE(TIZEN_SPDY)
+	case PROP_SYNC_CONTEXT:
+		g_value_set_boolean (value, priv->is_sync_context);
+		break;
+//#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -879,7 +906,7 @@ get_property (GObject *object, guint prop_id,
  * soup_message_new:
  * @method: the HTTP method for the created request
  * @uri_string: the destination endpoint (as a string)
- * 
+ *
  * Creates a new empty #SoupMessage, which will connect to @uri
  *
  * Return value: the new #SoupMessage (or %NULL if @uri could not
@@ -932,7 +959,7 @@ soup_message_new_from_uri (const char *method, SoupURI *uri)
  * @req_use: a #SoupMemoryUse describing how to handle @req_body
  * @req_body: a data buffer containing the body of the message request.
  * @req_length: the byte length of @req_body.
- * 
+ *
  * Convenience function to set the request body of a #SoupMessage. If
  * @content_type is %NULL, the request body must be empty as well.
  */
@@ -966,7 +993,7 @@ soup_message_set_request (SoupMessage    *msg,
  * @resp_body: (array length=resp_length) (element-type guint8): a data buffer
  * containing the body of the message response.
  * @resp_length: the byte length of @resp_body.
- * 
+ *
  * Convenience function to set the response body of a #SoupMessage. If
  * @content_type is %NULL, the response body must be empty as well.
  */
@@ -1172,6 +1199,14 @@ soup_message_restarted (SoupMessage *msg)
 void
 soup_message_finished (SoupMessage *msg)
 {
+#if ENABLE(TIZEN_DLOG)
+	if (msg->status_code < 200 || msg->status_code > 299) {
+			char *uri = soup_uri_to_string(soup_message_get_uri(msg), FALSE);
+			TIZEN_LOGD ("msg[%p] status_code[%d] reason[%s]", msg, msg->status_code, msg->reason_phrase);
+			TIZEN_SECURE_LOGD ("msg[%p] url[%s] status_code[%d] reason[%s]", msg, uri, msg->status_code, msg->reason_phrase);
+			g_free(uri);
+	}
+#endif
 	g_signal_emit (msg, signals[FINISHED], 0);
 }
 
@@ -1898,9 +1933,9 @@ soup_message_disables_feature (SoupMessage *msg, gpointer feature)
  * @msg: a #SoupMessage
  *
  * Gets @msg's first-party #SoupURI
- * 
+ *
  * Returns: (transfer none): the @msg's first party #SoupURI
- * 
+ *
  * Since: 2.30
  **/
 SoupURI *
@@ -1918,7 +1953,7 @@ soup_message_get_first_party (SoupMessage *msg)
  * soup_message_set_first_party:
  * @msg: a #SoupMessage
  * @first_party: the #SoupURI for the @msg's first party
- * 
+ *
  * Sets @first_party as the main document #SoupURI for @msg. For
  * details of when and how this is used refer to the documentation for
  * #SoupCookieJarAcceptPolicy.
@@ -1961,6 +1996,15 @@ soup_message_set_https_status (SoupMessage *msg, SoupConnection *conn)
 			      SOUP_SOCKET_TLS_CERTIFICATE, &certificate,
 			      SOUP_SOCKET_TLS_ERRORS, &errors,
 			      NULL);
+
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+	if (errors && soup_message_is_from_session_restore (msg)) {
+		TIZEN_LOGD ("msg[%p] errors[%d]", msg, errors);
+		errors = 0;
+		TIZEN_LOGD ("msg[%p] changed errors[%d]", msg, errors);
+	}
+#endif
+
 		g_object_set (msg,
 			      SOUP_MESSAGE_TLS_CERTIFICATE, certificate,
 			      SOUP_MESSAGE_TLS_ERRORS, errors,
@@ -2041,3 +2085,37 @@ soup_message_set_redirect (SoupMessage *msg, guint status_code,
 	g_free (location_str);
 	soup_uri_free (location);
 }
+//#if ENABLE_TIZEN_SPDY
+gboolean
+soup_message_is_using_sync_context (SoupMessage *msg)
+{
+	SoupMessagePrivate *priv;
+
+	g_return_val_if_fail (SOUP_IS_MESSAGE (msg), FALSE);
+
+	priv = SOUP_MESSAGE_GET_PRIVATE (msg);
+
+	return priv->is_sync_context;
+}
+//#endif
+
+// #if ENABL(TIZEN_CERTIFICATE_FILE_SET)
+gboolean soup_message_is_from_session_restore (SoupMessage *msg)
+{
+	char *target_field = "Cache-Control";
+	char *target_value = "max-stale=86400";
+	char *value = NULL;
+
+	if (!msg)
+		return FALSE;
+
+	// This criteria to decide session restore can be changed according to WebKit.
+	value = soup_message_headers_get (msg->request_headers, target_field);
+	if (value && !strcmp (value, target_value)) {
+		TIZEN_LOGD ("msg[%p] return TRUE", msg);
+		return TRUE;
+	}
+
+	return FALSE;
+}
+// #endif

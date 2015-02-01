@@ -15,6 +15,8 @@
 #include <glib.h>
 
 #include "soup-date.h"
+/*TIZEN patch*/
+#include "TIZEN.h"
 
 /**
  * SoupDate:
@@ -54,6 +56,10 @@ static const int nonleap_days_in_month[] = {
 static const int nonleap_days_before[] = {
 	0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365
 };
+
+#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
+static int currentSystemYear = 0;
+#endif
 
 static inline gboolean
 is_leap_year (int year)
@@ -769,7 +775,11 @@ soup_date_is_past (SoupDate *date)
 	g_return_val_if_fail (date != NULL, TRUE);
 
 	/* optimization */
+#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
+	if (date->year < currentSystemYear)
+#else
 	if (date->year < 2010)
+#endif
 		return TRUE;
 
 	return soup_date_to_time_t (date) < time (NULL);
@@ -936,3 +946,28 @@ soup_date_free (SoupDate *date)
 
 	g_slice_free (SoupDate, date);
 }
+
+#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
+/**
+ * soup_date_get_current_system_year:
+ *
+ * set currentSystemYear
+ *
+ * Since: 2.35
+ **/
+void
+soup_date_get_current_system_year(void)
+{
+	struct tm tm;
+	time_t the_time;
+
+	the_time = time (NULL);
+
+#ifdef HAVE_GMTIME_R
+	gmtime_r (&the_time, &tm);
+#else
+	tm = *gmtime (&the_time);
+#endif
+	currentSystemYear = tm.tm_year + 1900;
+}
+#endif
