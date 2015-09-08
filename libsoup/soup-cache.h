@@ -50,7 +50,10 @@ typedef enum {
 typedef enum {
 	SOUP_CACHE_RESPONSE_FRESH,
 	SOUP_CACHE_RESPONSE_NEEDS_VALIDATION,
-	SOUP_CACHE_RESPONSE_STALE
+	SOUP_CACHE_RESPONSE_STALE,
+/* #if ENABLE(TIZEN_TURBO) */
+	SOUP_CACHE_RESPONSE_SPDY_PUSH_ENTRY
+/* #endif */
 } SoupCacheResponse;
 
 typedef enum {
@@ -89,6 +92,10 @@ void       soup_cache_load         (SoupCache     *cache);
 void       soup_cache_set_max_size (SoupCache     *cache,
 				    guint          max_size);
 guint      soup_cache_get_max_size (SoupCache     *cache);
+
+/* #if ENABLE (TIZEN_CACHE_ENTRY_VALIDATED_SET) */
+void       soup_cache_entry_validated_set (SoupCache *cache, SoupMessage *msg);
+/* #endif */
 
 G_END_DECLS
 

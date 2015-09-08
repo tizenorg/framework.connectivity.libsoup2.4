@@ -22,6 +22,13 @@
 #include "soup-proxy-uri-resolver.h"
 #include "soup-uri.h"
 
+#include "TIZEN.h"
+#if ENABLE(TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+#include <time.h>
+#include <sys/time.h>
+#include <sqlite3.h>
+#include "soup-adaptive-timeout-private.h"
+#endif
 /**
  * SECTION:soup-session-async
  * @short_description: Soup session for asynchronous (main-loop-based) I/O.
@@ -48,7 +55,9 @@ G_DEFINE_TYPE (SoupSessionAsync, soup_session_async, SOUP_TYPE_SESSION)
 
 typedef struct {
 	GHashTable *idle_run_queue_sources;
-
+#if ENABLE (TIZEN_ADD_LOCK_OF_ASYNC_SESSION)
+	GMutex *idle_lock;
+#endif
 } SoupSessionAsyncPrivate;
 #define SOUP_SESSION_ASYNC_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SESSION_ASYNC, SoupSessionAsyncPrivate))
 
@@ -66,6 +75,9 @@ soup_session_async_init (SoupSessionAsync *sa)
 
 	priv->idle_run_queue_sources =
 		g_hash_table_new_full (NULL, NULL, NULL, destroy_unref_source);
+#if ENABLE (TIZEN_ADD_LOCK_OF_ASYNC_SESSION)
+	priv->idle_lock = g_mutex_new ();
+#endif
 }
 
 static void
@@ -77,6 +89,10 @@ dispose (GObject *object)
 		g_hash_table_destroy (priv->idle_run_queue_sources);
 		priv->idle_run_queue_sources = NULL;
 	}
+#if ENABLE (TIZEN_ADD_LOCK_OF_ASYNC_SESSION)
+	if (priv->idle_lock)
+		g_mutex_free (priv->idle_lock);
+#endif
 
 	G_OBJECT_CLASS (soup_session_async_parent_class)->dispose (object);
 }
@@ -321,7 +337,11 @@ got_connection (SoupConnection *conn, guint status, gpointer user_data)
 	SoupMessageQueueItem *item = user_data;
 	SoupSession *session = item->session;
 	SoupAddress *tunnel_addr;
-
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	SoupAdaptiveTimeout deadLinkData = {0,};
+	SoupURI *uri = 0;
+	int timeout = 0;
+#endif
 	if (item->state != SOUP_MESSAGE_CONNECTING) {
 		soup_connection_disconnect (conn);
 		do_idle_run_queue (session);
@@ -331,6 +351,34 @@ got_connection (SoupConnection *conn, guint status, gpointer user_data)
 	}
 
 	soup_message_set_https_status (item->msg, conn);
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	uri = soup_message_get_uri(item->msg);
+	soup_adaptive_timeout_get_dead_link_data(uri->host, &deadLinkData);
+
+	if((status != SOUP_STATUS_CANT_CONNECT) && (deadLinkData.status_code == SOUP_STATUS_CANT_CONNECT)) {
+		struct timeval requested_time = {0,};
+		struct timeval end_time = {0,};
+		gettimeofday (&end_time, NULL);
+		timersub(&end_time, &(item->start_time), &(requested_time));
+		timeout = requested_time.tv_sec;
+		timeout = timeout + 5;
+		if(timeout <= 20) {
+			soup_adaptive_timeout_delete_from_db(uri->host);
+			soup_adaptive_timeout_remove_dead_link(session, uri->host);
+		}
+		else {
+			soup_adaptive_timeout_set_dead_link_data(item, status, timeout);
+		}
+	}
+	else if((status == SOUP_STATUS_CANT_CONNECT) && (deadLinkData.status_code != SOUP_STATUS_CANT_CONNECT)
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+                && soup_connection_is_timedout_error (conn))
+#endif
+       {
+		timeout = 60; //try background request for 60 sec next
+		soup_adaptive_timeout_set_dead_link_data(item, status, timeout);
+       }
+#endif
 
 	if (status != SOUP_STATUS_OK) {
 		soup_connection_disconnect (conn);
@@ -376,6 +424,9 @@ process_queue_item (SoupMessageQueueItem *item,
 {
 	SoupSession *session = item->session;
 	SoupProxyURIResolver *proxy_resolver;
+#if ENABLE(TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	SoupAdaptiveTimeout deadLinkData = {0,};
+#endif
 
 	if (item->async_context != soup_session_get_async_context (session))
 		return;
@@ -386,6 +437,14 @@ process_queue_item (SoupMessageQueueItem *item,
 
 		switch (item->state) {
 		case SOUP_MESSAGE_STARTING:
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+			if(soup_uri_get_scheme(soup_message_get_uri(item->msg)) == SOUP_URI_SCHEME_HTTPS){
+				if (!soup_session_is_tls_db_initialized (session) && !soup_message_is_from_session_restore (item->msg)) {
+					soup_session_tls_stop_idle_timer(session);
+					soup_session_set_certificate_file(session);
+				}
+			}
+#endif
 			proxy_resolver = (SoupProxyURIResolver *)soup_session_get_feature_for_message (session, SOUP_TYPE_PROXY_URI_RESOLVER, item->msg);
 			if (!proxy_resolver) {
 				item->state = SOUP_MESSAGE_AWAITING_CONNECTION;
@@ -406,6 +465,17 @@ process_queue_item (SoupMessageQueueItem *item,
 			item->state = SOUP_MESSAGE_CONNECTING;
 			soup_message_queue_item_ref (item);
 			g_object_ref (session);
+
+#if ENABLE(TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+			if(item->msg != NULL) {
+				deadLinkData.status_code= SOUP_STATUS_NONE;
+				soup_adaptive_timeout_get_dead_link_data(soup_message_get_uri(item->msg)->host, &deadLinkData);
+				if(deadLinkData.status_code != SOUP_STATUS_NONE) {
+					gettimeofday (&(item->start_time), NULL);
+					soup_adaptive_timeout_change_timeout(item->conn, deadLinkData.timeout);
+				}
+			}
+#endif
 			soup_connection_connect_async (item->conn, item->cancellable,
 						       got_connection, item);
 			return;
@@ -489,8 +559,15 @@ idle_run_queue (gpointer sa)
 	if (!priv->idle_run_queue_sources)
 		return FALSE;
 
+#if ENABLE (TIZEN_ADD_LOCK_OF_ASYNC_SESSION)
+	g_mutex_lock (priv->idle_lock);
 	g_hash_table_remove (priv->idle_run_queue_sources,
 			     soup_session_get_async_context (sa));
+	g_mutex_unlock (priv->idle_lock);
+#else
+	g_hash_table_remove (priv->idle_run_queue_sources,
+			     soup_session_get_async_context (sa));
+#endif
 	run_queue (sa);
 	return FALSE;
 }
@@ -503,6 +580,8 @@ do_idle_run_queue (SoupSession *session)
 	if (!priv->idle_run_queue_sources)
 		return;
 
+#if ENABLE (TIZEN_ADD_LOCK_OF_ASYNC_SESSION)
+	g_mutex_lock (priv->idle_lock);
 	if (!g_hash_table_lookup (priv->idle_run_queue_sources,
 				  soup_session_get_async_context (session))) {
 		GMainContext *async_context = soup_session_get_async_context (session);
@@ -511,6 +590,17 @@ do_idle_run_queue (SoupSession *session)
 		g_hash_table_insert (priv->idle_run_queue_sources,
 				     async_context, g_source_ref (source));
 	}
+	g_mutex_unlock (priv->idle_lock);
+#else
+	if (!g_hash_table_lookup (priv->idle_run_queue_sources,
+				  soup_session_get_async_context (session))) {
+		GMainContext *async_context = soup_session_get_async_context (session);
+		GSource *source = soup_add_completion (async_context, idle_run_queue, session);
+
+		g_hash_table_insert (priv->idle_run_queue_sources,
+				     async_context, g_source_ref (source));
+	}
+#endif
 }
 
 static void

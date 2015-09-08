@@ -18,6 +18,8 @@
 #include "soup-message.h"
 #include "soup-message-headers.h"
 #include "soup-uri.h"
+/*TIZEN patch*/
+#include "TIZEN.h"
 
 /**
  * SECTION:soup-cookie
@@ -194,6 +196,25 @@ parse_value (const char **val_p)
 	return value;
 }
 
+#if ENABLE(TIZEN_FIX_PARSING_COOKIE_FOR_HTTPONLY_AND_SECURE)
+static void
+skip_value (const char **val_p)
+{
+	const char *start, *end, *p;
+
+	p = *val_p;
+	if (*p == '=')
+		p++;
+	start = skip_lws (p);
+	for (p = start; !is_value_ender (*p); p++)
+		;
+	end = unskip_lws (p, start);
+
+	*val_p = p;
+	return;
+}
+#endif
+
 static SoupDate *
 parse_date (const char **val_p)
 {
@@ -255,6 +276,12 @@ parse_one_cookie (const char *header, SoupURI *origin)
 			cookie->expires = parse_date (&p);
 		} else if (MATCH_NAME ("httponly")) {
 			cookie->http_only = TRUE;
+#if ENABLE(TIZEN_FIX_PARSING_COOKIE_FOR_HTTPONLY_AND_SECURE)
+			/* Ignore the return value as this call is required
+			 * to move p to the end of this atribute.
+			 */
+			skip_value(&p);
+#endif
 		} else if (MATCH_NAME ("max-age") && has_value) {
 			char *max_age_str = parse_value (&p), *mae;
 			long max_age = strtol (max_age_str, &mae, 10);
@@ -272,6 +299,12 @@ parse_one_cookie (const char *header, SoupURI *origin)
 			}
 		} else if (MATCH_NAME ("secure")) {
 			cookie->secure = TRUE;
+#if ENABLE(TIZEN_FIX_PARSING_COOKIE_FOR_HTTPONLY_AND_SECURE)
+			/* Ignore the return value as this call is required
+			 * to move p to the end of this atribute.
+			 */
+			skip_value(&p);
+#endif
 		} else {
 			/* Ignore unknown attributes, but we still have
 			 * to skip over the value.
@@ -772,7 +805,7 @@ serialize_cookie (SoupCookie *cookie, GString *header, gboolean set_cookie)
 	}
 	if (cookie->secure)
 		g_string_append (header, "; secure");
-	if (cookie->secure)
+	if (cookie->http_only)
 		g_string_append (header, "; HttpOnly");
 }
 

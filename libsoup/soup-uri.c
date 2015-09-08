@@ -14,6 +14,8 @@
 #include "soup-form.h"
 #include "soup-misc.h"
 
+#include "TIZEN.h"
+
 /**
  * SECTION:soup-uri
  * @short_description: URIs
@@ -113,6 +115,9 @@ static char *uri_normalized_copy (const char *str, int length, const char *unesc
 gpointer _SOUP_URI_SCHEME_HTTP, _SOUP_URI_SCHEME_HTTPS;
 gpointer _SOUP_URI_SCHEME_FTP;
 gpointer _SOUP_URI_SCHEME_FILE, _SOUP_URI_SCHEME_DATA;
+#if ENABLE(TIZEN_IGNORE_HOST_CHECK_FOR_TEL_SCHEME)
+gpointer _SOUP_URI_SCHEME_TEL;
+#endif
 
 static inline const char *
 soup_uri_parse_scheme (const char *scheme, int len)
@@ -286,9 +291,13 @@ soup_uri_new_with_base (SoupURI *base, const char *uri_string)
 	/* Find query */
 	question = memchr (uri_string, '?', end - uri_string);
 	if (question) {
+#if ENABLE (TIZEN_URI_NORMALIZATION_FOR_QUERY)
 		uri->query = uri_normalized_copy (question + 1,
-						  end - (question + 1),
-						  NULL);
+				  end - (question + 1),
+				  NULL);
+#else
+		uri->query = g_strndup(question + 1, end - (question + 1));
+#endif
 		end = question;
 	}
 

@@ -11,13 +11,18 @@
 
 #include <stdlib.h>
 #include <string.h>
-
+#include "TIZEN.h"
 #include "soup-connection.h"
 #include "soup-message.h"
 #include "soup-message-private.h"
 #include "soup-message-queue.h"
 #include "soup-misc.h"
 #include "soup-socket.h"
+
+#if ENABLE_TIZEN_SPDY
+#include "soup-connection-spdy-private.h"
+#include "soup-message-io-spdy-private.h"
+#endif
 
 typedef enum {
 	SOUP_MESSAGE_IO_CLIENT,
@@ -76,7 +81,7 @@ typedef struct {
 	SoupMessageCompletionFn   completion_cb;
 	gpointer                  completion_data;
 } SoupMessageIOData;
-	
+
 
 /* Put these around callback invocation if there is code afterward
  * that depends on the IO having not been cancelled.
@@ -93,6 +98,13 @@ soup_message_io_cleanup (SoupMessage *msg)
 {
 	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 	SoupMessageIOData *io;
+
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy) {
+		soup_message_io_spdy_cleanup (msg);
+		return;
+	}
+#endif
 
 	soup_message_io_stop (msg);
 
@@ -127,6 +139,13 @@ soup_message_io_stop (SoupMessage *msg)
 	if (!io)
 		return;
 
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy) {
+		soup_message_io_spdy_stop (msg);
+		return;
+	}
+#endif
+
 	if (io->read_tag) {
 		g_signal_handler_disconnect (io->sock, io->read_tag);
 		io->read_tag = 0;
@@ -155,6 +174,13 @@ soup_message_io_finished (SoupMessage *msg)
 	SoupMessageIOData *io = priv->io_data;
 	SoupMessageCompletionFn completion_cb = io->completion_cb;
 	gpointer completion_data = io->completion_data;
+
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy) {
+		soup_message_io_spdy_finished (msg);
+		return;
+	}
+#endif
 
 	g_object_ref (msg);
 	soup_message_io_cleanup (msg);
@@ -193,8 +219,10 @@ io_error (SoupSocket *sock, SoupMessage *msg, GError *error)
 	} else if (!SOUP_STATUS_IS_TRANSPORT_ERROR (msg->status_code))
 		soup_message_set_status (msg, SOUP_STATUS_IO_ERROR);
 
-	if (error)
+	if (error) {
+		TIZEN_LOGD ("sock[%p] msg[%p] error code[%d][%s]", sock, msg, error->code, error->message);
 		g_error_free (error);
+	}
 
 	soup_message_io_finished (msg);
 }
@@ -302,6 +330,16 @@ read_metadata (SoupMessage *msg, gboolean to_blank)
 						     (guchar *)"\r\n", 2);
 				got_lf = TRUE;
 				break;
+#if ENABLE(TIZEN_FIX_RESPONSE_HEADERS_LINEFEED)
+			} else if (!error && !nread && io->read_meta_buf->len > 0 &&
+				!strncmp ((char *)io->read_meta_buf->data +
+					 io->read_meta_buf->len - 2,
+					   "\r\n", 2)) {
+				g_byte_array_append (io->read_meta_buf,
+						     (guchar *)"\r\n", 2);
+				got_lf = TRUE;
+				break;
+#endif
 			}
 			/* else fall through */
 
@@ -326,6 +364,13 @@ read_metadata (SoupMessage *msg, gboolean to_blank)
 					   io->read_meta_buf->len - 3,
 					   "\n\r\n", 3))
 				break;
+#if ENABLE(TIZEN_FIX_RESPONSE_HEADERS_LINEFEED)
+			else if (!nread && !error &&
+				!strncmp ((char *)io->read_meta_buf->data +
+					 io->read_meta_buf->len - 3,
+					   "\n\r\n", 3))
+				break;
+#endif
 		}
 	}
 
@@ -498,6 +543,7 @@ read_body_chunk (SoupMessage *msg)
 			io->read_length -= nread;
 
 			buffer = content_decode (msg, buffer);
+
 			if (!buffer)
 				continue;
 
@@ -616,7 +662,7 @@ io_body_state (SoupEncoding encoding)
  *      W:DONE     / R:HEADERS        <-  R:DONE     / W:HEADERS
  *      W:DONE     / R:BODY           <-  R:DONE     / W:BODY
  *      W:DONE     / R:DONE               R:DONE     / W:DONE
- *     
+ *
  * and the "Expect: 100-continue" request/response, with the client
  * blocking halfway through its request, and then either continuing or
  * aborting, depending on the server response:
@@ -1163,11 +1209,16 @@ soup_message_io_server (SoupMessage *msg, SoupSocket *sock,
 	io_read (sock, msg);
 }
 
-void  
+void
 soup_message_io_pause (SoupMessage *msg)
 {
 	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 	SoupMessageIOData *io = priv->io_data;
+
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy)
+		return;
+#endif
 
 	g_return_if_fail (io != NULL);
 
@@ -1191,6 +1242,11 @@ io_unpause_internal (gpointer msg)
 {
 	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 	SoupMessageIOData *io = priv->io_data;
+
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy)
+		return FALSE;
+#endif
 
 	g_return_val_if_fail (io != NULL, FALSE);
 	io->unpause_source = NULL;
@@ -1223,6 +1279,11 @@ soup_message_io_unpause (SoupMessage *msg)
 	SoupMessageIOData *io = priv->io_data;
 	gboolean non_blocking, use_thread_context;
 	GMainContext *async_context;
+
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy)
+		return;
+#endif
 
 	g_return_if_fail (io != NULL);
 

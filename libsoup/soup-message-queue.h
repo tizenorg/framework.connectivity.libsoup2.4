@@ -56,6 +56,9 @@ struct _SoupMessageQueueItem {
 	guint ref_count            : 31;
 	SoupMessageQueueItem *prev, *next;
 	SoupMessageQueueItem *related;
+#if 1//ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	struct timeval start_time;
+#endif
 };
 
 SoupMessageQueue     *soup_message_queue_new        (SoupSession          *session);

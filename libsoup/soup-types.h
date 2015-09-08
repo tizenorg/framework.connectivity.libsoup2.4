@@ -31,6 +31,9 @@ typedef struct _SoupURI               SoupURI;
 typedef struct _SoupConnection        SoupConnection;
 typedef struct _SoupMessageQueue      SoupMessageQueue;
 typedef struct _SoupMessageQueueItem  SoupMessageQueueItem;
+/* #if ENABLE_TIZEN_SPDY */
+typedef struct _SoupConnectionSpdy    SoupConnectionSpdy;
+/* #endif */
 
 G_END_DECLS
 

@@ -21,6 +21,14 @@
 #include "soup-marshal.h"
 #include "soup-misc.h"
 #include "soup-misc-private.h"
+/*TIZEN patch*/
+#include "TIZEN.h"
+
+#if ENABLE_TIZEN_SPDY
+#include <spindly/spindly.h>
+
+#define __STR_GTLS_SET_NPN		"\x06spdy/3\x06spdy/2\x08http/1.1"
+#endif
 
 /**
  * SECTION:soup-socket
@@ -62,7 +70,12 @@ enum {
 	PROP_CLEAN_DISPOSE,
 	PROP_TLS_CERTIFICATE,
 	PROP_TLS_ERRORS,
-
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+        PROP_TIMEDOUT_ERROR,
+#endif
+#if ENABLE_TIZEN_SPDY
+	PROP_ALLOW_SPDY,
+#endif
 	LAST_PROP
 };
 
@@ -90,8 +103,16 @@ typedef struct {
 
 	GMutex iolock, addrlock;
 	guint timeout;
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+	gboolean timedout_error;
+#endif
 
 	GCancellable *connect_cancel;
+
+#if ENABLE_TIZEN_SPDY
+	gboolean is_spdy_allowed;
+	SoupSocketNPNType npn_type;
+#endif
 } SoupSocketPrivate;
 #define SOUP_SOCKET_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SOCKET, SoupSocketPrivate))
 
@@ -103,6 +124,26 @@ static void get_property (GObject *object, guint prop_id,
 static void soup_socket_peer_certificate_changed (GObject *conn,
 						  GParamSpec *pspec,
 						  gpointer user_data);
+
+#if ENABLE_TIZEN_SPDY
+static SoupSocketNPNType
+convert_to_npn_type (const gchar *npn)
+{
+	if (!npn)
+		return SOUP_SOCKET_NPN_DEFAULT;
+
+	if (!g_strcmp0(npn, "http/1.1"))
+		return SOUP_SOCKET_NPN_HTTP1_1;
+
+	if (!g_strcmp0(npn, "spdy/2"))
+		return SOUP_SOCKET_NPN_SPDY2;
+
+	if (!g_strcmp0(npn, "spdy/3"))
+		return SOUP_SOCKET_NPN_SPDY3;
+
+	return SOUP_SOCKET_NPN_DEFAULT;
+}
+#endif
 
 static void
 soup_socket_init (SoupSocket *sock)
@@ -509,6 +550,30 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 				    "Errors with the peer's TLS certificate",
 				    G_TYPE_TLS_CERTIFICATE_FLAGS, 0,
 				    G_PARAM_READABLE));
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+	/**
+	 * SOUP_SOCKET_TIMEDOUT_ERROR:
+	 *
+	 * Alias for the #SoupSocket:timeout_error property. Set based on
+	 * the error is timed out error or not
+	 **/
+	 g_object_class_install_property (
+		object_class, PROP_TIMEDOUT_ERROR,
+		g_param_spec_boolean (SOUP_SOCKET_TIMEDOUT_ERROR,
+				      "Timed out",
+				      "Socket timed out",
+				      FALSE,
+				      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+#endif
+#if ENABLE_TIZEN_SPDY
+	g_object_class_install_property (
+		object_class, PROP_ALLOW_SPDY,
+		g_param_spec_boolean (SOUP_SOCKET_ALLOW_SPDY,
+					"flag to decide to allow spdy or not",
+					"Set TRUE if want to use spdy feature",
+					FALSE,
+					  G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+#endif
 }
 
 
@@ -569,6 +634,16 @@ set_property (GObject *object, guint prop_id,
 	case PROP_CLEAN_DISPOSE:
 		priv->clean_dispose = g_value_get_boolean (value);
 		break;
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+	case PROP_TIMEDOUT_ERROR:
+		priv->timedout_error = g_value_get_boolean (value);
+		break;
+#endif
+#if ENABLE_TIZEN_SPDY
+	case PROP_ALLOW_SPDY:
+		priv->is_spdy_allowed = g_value_get_boolean (value);
+		break;
+#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -624,6 +699,16 @@ get_property (GObject *object, guint prop_id,
 	case PROP_TLS_ERRORS:
 		g_value_set_flags (value, priv->tls_errors);
 		break;
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+	case PROP_TIMEDOUT_ERROR:
+		g_value_set_boolean (value, priv->timedout_error);
+		break;
+#endif
+#if ENABLE_TIZEN_SPDY
+	case PROP_ALLOW_SPDY:
+		g_value_set_boolean (value, priv->is_spdy_allowed);
+		break;
+#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -686,6 +771,10 @@ socket_connected (SoupSocket *sock, GSocketConnection *conn, GError *error)
 			g_error_free (error);
 			return SOUP_STATUS_CANT_RESOLVE;
 		} else {
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+                        if (error->code == G_IO_ERROR_TIMED_OUT)
+                            priv->timedout_error = TRUE;
+#endif
 			g_error_free (error);
 			return SOUP_STATUS_CANT_CONNECT;
 		}
@@ -900,6 +989,9 @@ listen_watch (GObject *pollable, gpointer data)
 	new_priv->ssl = priv->ssl;
 	if (priv->ssl_creds)
 		new_priv->ssl_creds = priv->ssl_creds;
+#if ENABLE_TIZEN_SPDY
+	new_priv->is_spdy_allowed = priv->is_spdy_allowed;
+#endif
 	finish_socket_setup (new_priv);
 
 	if (new_priv->ssl_creds) {
@@ -1016,7 +1108,7 @@ soup_socket_start_ssl (SoupSocket *sock, GCancellable *cancellable)
 
 	return soup_socket_start_proxy_ssl (sock, soup_address_get_name (priv->remote_addr), cancellable);
 }
-	
+
 /**
  * soup_socket_start_proxy_ssl:
  * @sock: the socket
@@ -1093,7 +1185,7 @@ soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
 	priv->ostream = G_POLLABLE_OUTPUT_STREAM (g_io_stream_get_output_stream (priv->conn));
 	return TRUE;
 }
-	
+
 guint
 soup_socket_handshake_sync (SoupSocket    *sock,
 			    GCancellable  *cancellable)
@@ -1101,10 +1193,27 @@ soup_socket_handshake_sync (SoupSocket    *sock,
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 	GError *error = NULL;
 
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy_allowed)
+		g_tls_connection_set_next_protocols (G_TLS_CONNECTION (priv->conn),
+							__STR_GTLS_SET_NPN);
+#endif
+
 	priv->ssl = TRUE;
 	if (g_tls_connection_handshake (G_TLS_CONNECTION (priv->conn),
-					cancellable, &error))
+					cancellable, &error)) {
+#if ENABLE_TIZEN_SPDY
+		if (priv->is_spdy_allowed) {
+			const gchar *npn = g_tls_connection_get_next_protocol (G_TLS_CONNECTION (priv->conn));
+			priv->npn_type = convert_to_npn_type (npn);
+			g_free ((gpointer)npn);
+
+			if (priv->npn_type == SOUP_SOCKET_NPN_SPDY2 || priv->npn_type == SOUP_SOCKET_NPN_SPDY3)
+				g_socket_set_timeout (priv->gsock, 0);
+		}
+#endif
 		return SOUP_STATUS_OK;
+	}
 	else if (!priv->ssl_fallback &&
 		 g_error_matches (error, G_TLS_ERROR, G_TLS_ERROR_NOT_TLS)) {
 		g_error_free (error);
@@ -1127,13 +1236,30 @@ handshake_async_ready (GObject *source, GAsyncResult *result, gpointer user_data
 		g_main_context_pop_thread_default (priv->async_context);
 
 	if (g_tls_connection_handshake_finish (G_TLS_CONNECTION (source),
-					       result, &error))
+					       result, &error)) {
 		status = SOUP_STATUS_OK;
-	else if (!priv->ssl_fallback &&
+
+#if ENABLE_TIZEN_SPDY
+		if (priv->is_spdy_allowed) {
+			const gchar *npn = g_tls_connection_get_next_protocol (G_TLS_CONNECTION (priv->conn));
+			priv->npn_type = convert_to_npn_type (npn);
+			g_free ((gpointer)npn);
+
+			if (priv->npn_type == SOUP_SOCKET_NPN_SPDY2 || priv->npn_type == SOUP_SOCKET_NPN_SPDY3)
+				g_socket_set_timeout (priv->gsock, 0);
+		}
+#endif
+	} else if (!priv->ssl_fallback &&
 		 g_error_matches (error, G_TLS_ERROR, G_TLS_ERROR_NOT_TLS))
 		status = SOUP_STATUS_TLS_FAILED;
 	else
 		status = SOUP_STATUS_SSL_FAILED;
+
+	// Tizen log
+	if (error)
+		TIZEN_LOGD ("sock[%p] status[%d] error code[%d][%s]", data->sock, status, error->code, error->message);
+	// Tizen log end
+
 	g_clear_error (&error);
 
 	data->callback (data->sock, status, data->user_data);
@@ -1157,6 +1283,12 @@ soup_socket_handshake_async (SoupSocket         *sock,
 	data->callback = callback;
 	data->user_data = user_data;
 
+#if ENABLE_TIZEN_SPDY
+	if (priv->is_spdy_allowed)
+		g_tls_connection_set_next_protocols (G_TLS_CONNECTION (priv->conn),
+							__STR_GTLS_SET_NPN);
+#endif
+
 	if (priv->async_context && !priv->use_thread_context)
 		g_main_context_push_thread_default (priv->async_context);
 	g_tls_connection_handshake_async (G_TLS_CONNECTION (priv->conn),
@@ -1176,7 +1308,13 @@ soup_socket_handshake_async (SoupSocket         *sock,
 gboolean
 soup_socket_is_ssl (SoupSocket *sock)
 {
+#if ENABLE(TIZEN_CHECK_SOCKET_EXISTS_BEFORE_USE_IT)
+	SoupSocketPrivate *priv;
+	g_return_val_if_fail (SOUP_IS_SOCKET (sock), FALSE);
+	priv = SOUP_SOCKET_GET_PRIVATE (sock);
+#else
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
+#endif
 
 	return priv->ssl;
 }
@@ -1328,6 +1466,11 @@ socket_read_watch (GObject *pollable, gpointer user_data)
 	SoupSocket *sock = user_data;
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
+#if ENABLE_TIZEN_SPDY
+	if (!priv)
+		return FALSE;
+#endif
+
 	priv->read_src = NULL;
 	g_signal_emit (sock, signals[READABLE], 0);
 	return FALSE;
@@ -1376,6 +1519,7 @@ read_from_network (SoupSocket *sock, gpointer buffer, gsize len,
 	}
 
 	g_propagate_error (error, my_err);
+	TIZEN_LOGD("sock[%p] error[%d][%s]", sock, my_err->code, my_err->message);
 	return SOUP_SOCKET_ERROR;
 }
 
@@ -1642,3 +1786,26 @@ soup_socket_write (SoupSocket *sock, gconstpointer buffer,
 	g_propagate_error (error, my_err);
 	return SOUP_SOCKET_ERROR;
 }
+
+#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+gboolean soup_socket_is_timedout_error (SoupSocket *sock)
+{
+       SoupSocketPrivate *priv;
+       priv = SOUP_SOCKET_GET_PRIVATE (sock);
+
+       return priv->timedout_error;
+}
+#endif
+
+#if ENABLE_TIZEN_SPDY
+SoupSocketNPNType
+soup_socket_get_npn_type	(SoupSocket	*sock)
+{
+	SoupSocketPrivate *priv;
+
+	g_return_val_if_fail (SOUP_IS_SOCKET (sock), SOUP_SOCKET_NPN_DEFAULT);
+	priv = SOUP_SOCKET_GET_PRIVATE (sock);
+
+	return priv->npn_type;
+}
+#endif

@@ -25,6 +25,8 @@
 
 #include "soup-cache.h"
 #include <libsoup/soup-message.h>
+/*TIZEN patch*/
+#include "TIZEN.h"
 
 G_BEGIN_DECLS
 
@@ -36,6 +38,14 @@ SoupCacheability   soup_cache_get_cacheability             (SoupCache   *cache,
 							    SoupMessage *msg);
 SoupMessage       *soup_cache_generate_conditional_request (SoupCache   *cache,
 							    SoupMessage *original);
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+SoupBuffer        *soup_cache_get_response                 (SoupCache *cache,
+								SoupMessage *msg);
+#endif
+#if ENABLE(TIZEN_UPDATE_CACHE_ENTRY_CONTENT_TYPE_HEADER)
+void              soup_cache_entry_update_content_type     (SoupCache     *cache,
+                                                            SoupMessage *msg, const char *value);
+#endif
 
 G_END_DECLS
 

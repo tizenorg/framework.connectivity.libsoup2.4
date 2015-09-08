@@ -179,7 +179,7 @@ AC_SUBST(SQLITE_LIBS)
 dnl ***************
 dnl *** gtk-doc ***
 dnl ***************
-GTK_DOC_CHECK([1.10])
+#GTK_DOC_CHECK([1.10])
 
 dnl *****************************
 dnl *** gobject-introspection ***
@@ -210,6 +210,64 @@ allow building libsoup anyway (since glib-networking is not actually
 required at compile time), but you should be sure to add a runtime
 dependency on it.])
 fi
+
+dnl *************************
+dnl *** Tizen dlog support  ***
+dnl *************************
+
+AC_MSG_CHECKING([for Tizen dlog])
+AC_ARG_ENABLE(tizen-dlog,
+         AS_HELP_STRING([--disable-tizen-dlog], [Disable Tizen dlog support ]),
+         enable_tizen_dlog=no,
+         enable_tizen_dlog=yes)
+AC_MSG_RESULT($enable_tizen_dlog)
+
+if test $enable_tizen_dlog != no;then
+	AC_DEFINE(ENABLE_TIZEN_DLOG, 1, [Add new feature, which prints logs via Tizen log system named dlog.])
+	PKG_CHECK_MODULES(TIZEN_DLOG, dlog)
+	AC_SUBST(TIZEN_DLOG_CFLAGS)
+	AC_SUBST(TIZEN_DLOG_LIBS)
+fi
+
+AM_CONDITIONAL(TIZEN_DLOG, [test $enable_tizen_dlog = yes])
+
+dnl *************************
+dnl *** Tizen SPDY support  ***
+dnl *************************
+
+AC_MSG_CHECKING([for Tizen SPDY Support])
+AC_ARG_ENABLE(tizen-spdy,
+         AS_HELP_STRING([--enable-tizen-spdy], [Enable SPDY support for Tizen]),
+         enable_tizen_spdy=$enableval,
+         enable_tizen_spdy=no)
+AC_MSG_RESULT($enable_tizen_spdy)
+
+if test x$enable_tizen_spdy != xno;then
+	AC_DEFINE(ENABLE_TIZEN_SPDY, 1, [Add new feature, SPDY Support for Tizen.])
+	PKG_CHECK_MODULES(TIZEN_SPINDLY, spindly)
+	AC_SUBST(TIZEN_SPINDLY_CFLAGS)
+	AC_SUBST(TIZEN_SPINDLY_LIBS)
+fi
+
+AM_CONDITIONAL(TIZEN_SPDY, [test x$enable_tizen_spdy != xno])
+
+dnl *************************
+dnl *** Tizen engineer mode support  ***
+dnl *************************
+
+AC_MSG_CHECKING([for Tizen engineer mode is enabled])
+AC_ARG_ENABLE(tizen-engineer-mode,
+         AS_HELP_STRING([--enable-tizen-engineer-mode], [Enable engineer mode support for Tizen]),
+         enable_tizen_engineer_mode=$enableval,
+         enable_tizen_engineer_mode=no)
+AC_MSG_RESULT($enable_tizen_engineer_mode)
+
+if test x$enable_tizen_engineer_mode != xno;then
+	TIZEN_ENGINEER_MODE_FLAGS="-DTIZEN_DEBUG_ENABLE"
+else
+	TIZEN_ENGINEER_MODE_FLAGS=
+fi
+AC_SUBST(TIZEN_ENGINEER_MODE_FLAGS)
 
 dnl ******************************
 dnl *** Stuff for regression tests

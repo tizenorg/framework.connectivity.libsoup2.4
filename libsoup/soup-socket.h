@@ -52,6 +52,12 @@ typedef struct {
 #define SOUP_SOCKET_TIMEOUT             "timeout"
 #define SOUP_SOCKET_TLS_CERTIFICATE     "tls-certificate"
 #define SOUP_SOCKET_TLS_ERRORS          "tls-errors"
+//#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+#define SOUP_SOCKET_TIMEDOUT_ERROR          "timedout-error"
+//#endif
+/*#if ENABLE_TIZEN_SPDY*/
+#define SOUP_SOCKET_ALLOW_SPDY        "allow-spdy"
+/*#endif*/
 
 typedef void (*SoupSocketCallback)            (SoupSocket         *sock,
 					       guint               status,
@@ -93,6 +99,19 @@ typedef enum {
 	SOUP_SOCKET_ERROR
 } SoupSocketIOStatus;
 
+//#if ENABLE_TIZEN_SPDY
+typedef enum {
+	SOUP_SOCKET_NPN_DEFAULT,
+	SOUP_SOCKET_NPN_HTTP1_1,
+	SOUP_SOCKET_NPN_SPDY2,
+	SOUP_SOCKET_NPN_SPDY3
+} SoupSocketNPNType;
+//#endif
+
+#if defined ENABLE_TIZEN_SPDY && ENABLE_TIZEN_SPDY
+SoupSocketNPNType	soup_socket_get_npn_type	(SoupSocket	*sock);
+#endif
+
 SoupSocketIOStatus  soup_socket_read       (SoupSocket         *sock,
 					    gpointer            buffer,
 					    gsize               len,
@@ -115,6 +134,9 @@ SoupSocketIOStatus  soup_socket_write      (SoupSocket         *sock,
 					    gsize              *nwrote,
 					    GCancellable       *cancellable,
 					    GError            **error);
+//#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+gboolean soup_socket_is_timedout_error (SoupSocket  *sock);
+//#endif
 
 G_END_DECLS
 

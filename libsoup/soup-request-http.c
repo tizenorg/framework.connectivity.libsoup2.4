@@ -36,6 +36,16 @@
 #include "soup-message.h"
 #include "soup-session.h"
 #include "soup-uri.h"
+/*TIZEN patch*/
+#include "TIZEN.h"
+#if ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+#include "soup-adaptive-timeout-private.h"
+#endif
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+#include "soup-redirection-predictor-private.h"
+#include <stdio.h>
+#endif
 
 G_DEFINE_TYPE (SoupRequestHTTP, soup_request_http, SOUP_TYPE_REQUEST)
 
@@ -135,6 +145,16 @@ http_input_stream_ready_cb (GObject *source, GAsyncResult *result, gpointer user
 		g_simple_async_result_take_error (sadata->simple, error);
 		g_object_unref (httpstream);
 	}
+
+#if ENABLE(TIZEN_DLOG)
+	if (error) {
+		char *uri = soup_uri_to_string(soup_message_get_uri(sadata->http->priv->msg), FALSE);
+		TIZEN_LOGD ("msg[%p] error code[%d]", sadata->http->priv->msg, error->code);
+		TIZEN_SECURE_LOGD ("url [%s] GError [%s]", uri, error->message);
+		g_free(uri);
+	}
+#endif
+
 	g_simple_async_result_complete (sadata->simple);
 	free_send_async_data (sadata);
 }
@@ -146,8 +166,13 @@ conditional_get_ready_cb (SoupSession *session, SoupMessage *msg, gpointer user_
 	SendAsyncData *sadata = user_data;
 	GInputStream *stream;
 
+#if ENABLE (TIZEN_CACHE_ENTRY_VALIDATED_SET)
+	SoupCache *cache = (SoupCache *)soup_session_get_feature (session, SOUP_TYPE_CACHE);
+#endif
 	if (msg->status_code == SOUP_STATUS_NOT_MODIFIED) {
+#if !ENABLE (TIZEN_CACHE_ENTRY_VALIDATED_SET)
 		SoupCache *cache = (SoupCache *)soup_session_get_feature (session, SOUP_TYPE_CACHE);
+#endif
 
 		stream = soup_cache_send_response (cache, sadata->original);
 		if (stream) {
@@ -171,6 +196,9 @@ conditional_get_ready_cb (SoupSession *session, SoupMessage *msg, gpointer user_
 	/* The resource was modified, or else it mysteriously disappeared
 	 * from our cache. Either way we need to reload it now.
 	 */
+#if ENABLE (TIZEN_CACHE_ENTRY_VALIDATED_SET)
+	soup_cache_entry_validated_set (cache, sadata->original);
+#endif
 	stream = soup_http_input_stream_new (session, sadata->original);
 	soup_http_input_stream_send_async (SOUP_HTTP_INPUT_STREAM (stream), G_PRIORITY_DEFAULT,
 					   sadata->cancellable, http_input_stream_ready_cb, sadata);
@@ -187,7 +215,7 @@ idle_return_from_cache_cb (gpointer data)
 	/* Issue signals  */
 	soup_message_got_headers (sadata->http->priv->msg);
 
-	sadata->http->priv->content_type = g_strdup (soup_message_headers_get_content_type (sadata->http->priv->msg->response_headers, NULL));
+	sadata->http->priv->content_type = g_strdup (soup_message_headers_get_one (sadata->http->priv->msg->response_headers, "Content-Type"));
 
 	g_simple_async_result_complete (sadata->simple);
 
@@ -196,6 +224,103 @@ idle_return_from_cache_cb (gpointer data)
 	free_send_async_data (sadata);
 	return FALSE;
 }
+
+#if ENABLE(TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+
+static void
+soup_adaptive_timeout_message_is_finished(SoupSession *session, SoupMessage *adaptive_timeout_msg, gpointer user_data)
+{
+	soup_adaptive_timeout_remove_dead_link(session, soup_message_get_uri(adaptive_timeout_msg)->host);
+	g_object_unref (adaptive_timeout_msg);
+}
+
+static void
+soup_adaptive_timeout_message_headers_copy (SoupMessageHeaders *src_hdrs, SoupMessageHeaders *dest_hdrs)
+{
+	SoupMessageHeadersIter iter;
+	const char *hname, *value;
+
+	soup_message_headers_iter_init (&iter, src_hdrs);
+	while (soup_message_headers_iter_next (&iter, &hname, &value))
+		soup_message_headers_replace (dest_hdrs, hname, value);
+}
+
+static void
+soup_adaptive_timeout_send_deadlink_request_background(SoupSession *session, SoupURI *uri, SoupMessage* original_msg )
+{
+	char * url = soup_uri_to_string(uri, FALSE);
+	SoupMessage* adaptive_timeout_msg = soup_message_new (original_msg->method, url);
+
+	soup_adaptive_timeout_message_headers_copy(original_msg->request_headers, adaptive_timeout_msg->request_headers);
+	g_return_if_fail (adaptive_timeout_msg->request_headers);
+	g_free(url);
+
+	soup_adaptive_timeout_set_dead_link_running_status(session, uri->host, 1);
+	/* Add an extra ref since soup_session_queue_message steals one */
+	g_object_ref (adaptive_timeout_msg);
+	soup_session_queue_message (session, adaptive_timeout_msg, soup_adaptive_timeout_message_is_finished, NULL);
+}
+
+static gboolean
+idle_return_from_deadLink_cb (gpointer user_data)
+{
+	SendAsyncData *sadata = user_data;
+	SoupSession *session;
+	GError *error = NULL;
+	SoupURI *uri;
+
+	session = soup_request_get_session (&(sadata->http->parent));
+	uri = soup_message_get_uri(sadata->http->priv->msg);
+
+	if(sadata->http->priv->msg->status_code == SOUP_STATUS_CANT_CONNECT)
+	{
+		g_set_error (&error,
+					SOUP_HTTP_ERROR,  /* error domain */
+					sadata->http->priv->msg->status_code, /* error code */
+					"Failed to connect server: %s", /* error message format string */
+					uri->host);
+		g_simple_async_result_take_error (sadata->simple, error);
+		g_object_unref (sadata->stream);
+
+		g_simple_async_result_complete (sadata->simple);
+		soup_message_finished (sadata->http->priv->msg);
+
+		//send background request
+		if(soup_adaptive_timeout_get_dead_link_running_status(session, uri->host) == 0)
+			soup_adaptive_timeout_send_deadlink_request_background(session, uri, sadata->original);
+
+#if ENABLE(TIZEN_DLOG)
+		if (error) {
+			char *url = soup_uri_to_string(uri, FALSE);
+			TIZEN_SECURE_LOGD ("Dead link url identified url = [%s] ", url);
+			g_free(url);
+		}
+#endif
+	}
+	return FALSE;
+
+}
+#endif
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+static gboolean
+idle_return_from_redirection_predictor_cb (gpointer user_data)
+{
+	SendAsyncData *sadata = user_data;
+	GError *error = NULL;
+
+	g_set_error_literal (&error,
+			     SOUP_HTTP_ERROR,
+			     sadata->http->priv->msg->status_code,
+			     sadata->http->priv->msg->reason_phrase);
+	g_simple_async_result_take_error (sadata->simple, error);
+	g_simple_async_result_complete (sadata->simple);
+	soup_message_finished (sadata->http->priv->msg);
+	free_send_async_data (sadata);
+
+	return FALSE;
+}
+#endif
 
 static void
 soup_request_http_send_async (SoupRequest          *request,
@@ -208,6 +333,14 @@ soup_request_http_send_async (SoupRequest          *request,
 	GInputStream *stream;
 	SoupSession *session;
 	SoupCache *cache;
+#if ENABLE(TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	SoupURI *uri = NULL;
+	SoupAdaptiveTimeout deadLinkData = {0};
+#endif
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	SoupRedirectionPredictor *redirection_predictor = NULL;
+	gboolean is_redirection_predictor_allowed = FALSE;
+#endif
 
 	sadata = g_slice_new0 (SendAsyncData);
 	sadata->http = g_object_ref (http);
@@ -217,6 +350,47 @@ soup_request_http_send_async (SoupRequest          *request,
 
 	session = soup_request_get_session (request);
 	cache = (SoupCache *)soup_session_get_feature (session, SOUP_TYPE_CACHE);
+#if ENABLE(TIZEN_ADAPTIVE_HTTP_TIMEOUT)
+	uri = soup_message_get_uri(http->priv->msg);
+	soup_adaptive_timeout_get_dead_link_data(uri->host, &deadLinkData);
+
+	if(deadLinkData.status_code == SOUP_STATUS_CANT_CONNECT)
+	{
+		sadata->http->priv->msg->status_code = SOUP_STATUS_CANT_CONNECT;
+		sadata->original = g_object_ref (http->priv->msg);
+		soup_add_completion (soup_session_get_async_context (session),
+					     idle_return_from_deadLink_cb, sadata);
+		return;
+	}
+#endif
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	g_return_if_fail (session != NULL);
+
+	g_object_get (session, "allow-redirection-predictor", &is_redirection_predictor_allowed, NULL);
+
+	if (is_redirection_predictor_allowed) {
+		if (http->priv->msg->method == SOUP_METHOD_GET) {
+			redirection_predictor = (SoupRedirectionPredictor *)soup_session_get_feature (session, SOUP_TYPE_REDIRECTION_PREDICTOR);
+
+			if (redirection_predictor) {
+				if (soup_redirection_predictor_has_prediction(redirection_predictor, http->priv->msg)) {
+					if (http->priv->msg->status_code == SOUP_STATUS_TOO_MANY_REDIRECTS) {
+						sadata->original = g_object_ref (http->priv->msg);
+						soup_add_completion (soup_session_get_async_context (session),
+								    idle_return_from_redirection_predictor_cb, sadata);
+						return;
+					}
+					stream = soup_http_input_stream_new (session, http->priv->msg);
+					soup_http_input_stream_send_async_without_queue_message (SOUP_HTTP_INPUT_STREAM (stream),
+						G_PRIORITY_DEFAULT, cancellable,
+						http_input_stream_ready_cb, sadata);
+					return;
+				}
+			}
+		}
+	}
+#endif
 
 	if (cache) {
 		SoupCacheResponse response;
@@ -252,11 +426,11 @@ soup_request_http_send_async (SoupRequest          *request,
 			}
 		}
 	}
-
 	stream = soup_http_input_stream_new (session, http->priv->msg);
 	soup_http_input_stream_send_async (SOUP_HTTP_INPUT_STREAM (stream),
 					   G_PRIORITY_DEFAULT, cancellable,
 					   http_input_stream_ready_cb, sadata);
+
 }
 
 static GInputStream *

@@ -9,6 +9,7 @@
 #include "soup-session.h"
 #include "soup-message-private.h"
 #include "soup-proxy-uri-resolver.h"
+#include "TIZEN.h"
 
 G_BEGIN_DECLS
 
@@ -30,6 +31,13 @@ void                  soup_session_unqueue_item         (SoupSession          *s
 void                  soup_session_set_item_status      (SoupSession          *session,
 							 SoupMessageQueueItem *item,
 							 guint                 status_code);
+
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
+void			soup_session_set_certificate_file (SoupSession  *session);
+void 			soup_session_tls_start_idle_timer (SoupSession *session, guint idle_timeout);
+void 			soup_session_tls_stop_idle_timer (SoupSession *session);
+gboolean		soup_session_is_tls_db_initialized (SoupSession* session);
+#endif
 
 G_END_DECLS
 

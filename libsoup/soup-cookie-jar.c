@@ -20,6 +20,8 @@
 #include "soup-message.h"
 #include "soup-session-feature.h"
 #include "soup-uri.h"
+/*TIZEN_patch*/
+#include "TIZEN.h"
 
 /**
  * SECTION:soup-cookie-jar
@@ -34,7 +36,6 @@
  * Note that the base #SoupCookieJar class does not support any form
  * of long-term cookie persistence.
  **/
-
 static void soup_cookie_jar_session_feature_init (SoupSessionFeatureInterface *feature_interface, gpointer interface_data);
 static void request_queued (SoupSessionFeature *feature, SoupSession *session,
 			    SoupMessage *msg);
@@ -42,6 +43,7 @@ static void request_started (SoupSessionFeature *feature, SoupSession *session,
 			     SoupMessage *msg, SoupSocket *socket);
 static void request_unqueued (SoupSessionFeature *feature, SoupSession *session,
 			      SoupMessage *msg);
+static gboolean is_persistent (SoupCookieJar *jar);
 
 G_DEFINE_TYPE_WITH_CODE (SoupCookieJar, soup_cookie_jar, G_TYPE_OBJECT,
 			 G_IMPLEMENT_INTERFACE (SOUP_TYPE_SESSION_FEATURE,
@@ -86,6 +88,9 @@ soup_cookie_jar_init (SoupCookieJar *jar)
 					       g_free, NULL);
 	priv->serials = g_hash_table_new (NULL, NULL);
 	priv->accept_policy = SOUP_COOKIE_JAR_ACCEPT_ALWAYS;
+#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
+	soup_date_get_current_system_year();
+#endif
 }
 
 static void
@@ -123,6 +128,8 @@ soup_cookie_jar_class_init (SoupCookieJarClass *jar_class)
 	object_class->finalize = finalize;
 	object_class->set_property = set_property;
 	object_class->get_property = get_property;
+
+	jar_class->is_persistent = is_persistent;
 
 	/**
 	 * SoupCookieJar::changed
@@ -247,7 +254,7 @@ get_property (GObject *object, guint prop_id,
  * Since: 2.24
  **/
 SoupCookieJar *
-soup_cookie_jar_new (void) 
+soup_cookie_jar_new (void)
 {
 	return g_object_new (SOUP_TYPE_COOKIE_JAR, NULL);
 }
@@ -264,6 +271,12 @@ void
 soup_cookie_jar_save (SoupCookieJar *jar)
 {
 	/* Does nothing, obsolete */
+}
+
+static gboolean
+is_persistent (SoupCookieJar *jar)
+{
+	return FALSE;
 }
 
 static void
@@ -558,6 +571,7 @@ soup_cookie_jar_set_cookie_with_first_party (SoupCookieJar *jar,
 	if (soup_cookie) {
 		if (priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_ALWAYS ||
 		    soup_cookie_domain_matches (soup_cookie, first_party->host)) {
+
 			/* will steal or free soup_cookie */
 			soup_cookie_jar_add_cookie (jar, soup_cookie);
 		} else {
@@ -579,7 +593,7 @@ process_set_cookie_header (SoupMessage *msg, gpointer user_data)
 	new_cookies = soup_cookies_from_response (msg);
 	for (nc = new_cookies; nc; nc = nc->next) {
 		SoupURI *first_party = soup_message_get_first_party (msg);
-		
+
 		if ((priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_NO_THIRD_PARTY &&
 		     first_party != NULL && first_party->host &&
 		     soup_cookie_domain_matches (nc->data, first_party->host)) ||
@@ -746,7 +760,7 @@ soup_cookie_jar_get_accept_policy (SoupCookieJar *jar)
  * soup_cookie_jar_set_accept_policy:
  * @jar: a #SoupCookieJar
  * @policy: a #SoupCookieJarAcceptPolicy
- * 
+ *
  * Sets @policy as the cookie acceptance policy for @jar.
  *
  * Since: 2.30
@@ -765,4 +779,22 @@ soup_cookie_jar_set_accept_policy (SoupCookieJar *jar,
 		priv->accept_policy = policy;
 		g_object_notify (G_OBJECT (jar), SOUP_COOKIE_JAR_ACCEPT_POLICY);
 	}
+}
+
+/**
+ * soup_cookie_jar_is_persistent:
+ * @jar: a #SoupCookieJar
+ *
+ * Gets whether @jar stores cookies persistenly.
+ *
+ * Returns: %TRUE if @jar storage is persistent or %FALSE otherwise.
+ *
+ * Since: 2.40
+ **/
+gboolean
+soup_cookie_jar_is_persistent (SoupCookieJar *jar)
+{
+	g_return_val_if_fail (SOUP_IS_COOKIE_JAR (jar), FALSE);
+
+	return SOUP_COOKIE_JAR_GET_CLASS (jar)->is_persistent (jar);
 }

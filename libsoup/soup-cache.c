@@ -43,6 +43,11 @@
 #include "soup-session.h"
 #include "soup-session-feature.h"
 #include "soup-uri.h"
+/*TIZEN patch*/
+#include "TIZEN.h"
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+#include "soup-redirection-predictor-private.h"
+#endif
 
 static SoupSessionFeatureInterface *soup_cache_default_feature_interface;
 static void soup_cache_session_feature_init (SoupSessionFeatureInterface *feature_interface, gpointer interface_data);
@@ -90,6 +95,9 @@ typedef struct _SoupCacheEntry {
 	guint32 hits;
 	GCancellable *cancellable;
 	guint16 status_code;
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	char *user_agent;
+#endif
 } SoupCacheEntry;
 
 struct _SoupCachePrivate {
@@ -102,6 +110,10 @@ struct _SoupCachePrivate {
 	guint max_size;
 	guint max_entry_data_size; /* Computed value. Here for performance reasons */
 	GList *lru_start;
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	SoupRedirectionPredictor *redirection_predictor;
+#endif
 };
 
 typedef struct {
@@ -276,6 +288,11 @@ soup_cache_entry_free (SoupCacheEntry *entry, GFile *file)
 	g_free (entry->uri);
 	entry->uri = NULL;
 
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	g_free (entry->user_agent);
+	entry->user_agent = NULL;
+#endif
+
 	if (entry->current_writing_buffer) {
 		soup_buffer_free (entry->current_writing_buffer);
 		entry->current_writing_buffer = NULL;
@@ -330,6 +347,7 @@ static gboolean
 soup_cache_entry_is_fresh_enough (SoupCacheEntry *entry, gint min_fresh)
 {
 	guint limit = (min_fresh == -1) ? soup_cache_entry_get_current_age (entry) : (guint) min_fresh;
+
 	return entry->freshness_lifetime > limit;
 }
 
@@ -460,6 +478,10 @@ soup_cache_entry_new (SoupCache *cache, SoupMessage *msg, time_t request_time, t
 {
 	SoupCacheEntry *entry;
 	const char *date;
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	GString *str;
+	const char *ua;
+#endif
 
 	entry = g_slice_new0 (SoupCacheEntry);
 	entry->dirty = FALSE;
@@ -474,6 +496,15 @@ soup_cache_entry_new (SoupCache *cache, SoupMessage *msg, time_t request_time, t
 	/* Headers */
 	entry->headers = soup_message_headers_new (SOUP_MESSAGE_HEADERS_RESPONSE);
 	copy_end_to_end_headers (msg->response_headers, entry->headers);
+
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	/* User Agent */
+	ua = soup_message_headers_get_one(msg->request_headers, "User-Agent");
+	if (ua) {
+		str = g_string_new(ua);
+		entry->user_agent = str->str;
+	}
+#endif /* TIZEN_USER_AGENT_CHECK_IN_CACHE */
 
 	/* LRU list */
 	entry->hits = 0;
@@ -589,7 +620,7 @@ close_ready_cb (GObject *source, GAsyncResult *result, SoupCacheWritingFixture *
 	if (entry) {
 		entry->dirty = FALSE;
 		entry->got_body = FALSE;
-
+		
 		if (entry->current_writing_buffer) {
 			soup_buffer_free (entry->current_writing_buffer);
 			entry->current_writing_buffer = NULL;
@@ -1056,8 +1087,8 @@ soup_cache_send_response (SoupCache *cache, SoupMessage *msg)
 	   removed without notifying the cache */
 	file = get_file_from_entry (cache, entry);
 	stream = G_INPUT_STREAM (g_file_read (file, NULL, NULL));
-	g_object_unref (file);
 
+	g_object_unref (file);
 	/* Do not change the original message if there is no resource */
 	if (stream == NULL)
 		return stream;
@@ -1082,6 +1113,42 @@ soup_cache_send_response (SoupCache *cache, SoupMessage *msg)
 	return stream;
 }
 
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+SoupBuffer *soup_cache_get_response (SoupCache *cache, SoupMessage *msg)
+{
+	SoupCacheEntry *entry;
+	char *current_age;
+	char *contents;
+	char *filename;
+	gsize length;
+	GError *error = NULL;
+
+	g_return_val_if_fail (SOUP_IS_CACHE (cache), NULL);
+	g_return_val_if_fail (SOUP_IS_MESSAGE (msg), NULL);
+
+	entry = soup_cache_entry_lookup (cache, msg);
+	g_return_val_if_fail (entry, NULL);
+
+	filename = g_strdup_printf ("%s%s%u", cache->priv->cache_dir,
+						G_DIR_SEPARATOR_S, (guint) entry->key);
+	if (!g_file_get_contents (filename, &contents, &length, &error))
+		g_warning ("Could not read %s because of %s", filename, error->message);
+	g_free (filename);
+
+	entry->being_validated = FALSE;
+
+	soup_message_set_status (msg, entry->status_code);
+
+	copy_end_to_end_headers (entry->headers, msg->response_headers);
+
+	current_age = g_strdup_printf ("%d", soup_cache_entry_get_current_age (entry));
+	soup_message_headers_replace (msg->response_headers, "Age", current_age);
+	g_free (current_age);
+
+	return soup_buffer_new (SOUP_MEMORY_TAKE, contents, length);
+}
+#endif
+
 static void
 request_started (SoupSessionFeature *feature, SoupSession *session,
 		 SoupMessage *msg, SoupSocket *socket)
@@ -1099,6 +1166,11 @@ attach (SoupSessionFeature *feature, SoupSession *session)
 {
 	SoupCache *cache = SOUP_CACHE (feature);
 	cache->priv->session = session;
+
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	soup_session_add_feature (session, SOUP_SESSION_FEATURE(cache->priv->redirection_predictor));
+#endif
 
 	soup_cache_default_feature_interface->attach (feature, session);
 }
@@ -1132,6 +1204,10 @@ soup_cache_init (SoupCache *cache)
 	priv->max_size = DEFAULT_MAX_SIZE;
 	priv->max_entry_data_size = priv->max_size / MAX_ENTRY_DATA_PERCENTAGE;
 	priv->size = 0;
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	priv->redirection_predictor = NULL;;
+#endif
 }
 
 static void
@@ -1163,6 +1239,10 @@ soup_cache_finalize (GObject *object)
 
 	g_list_free (priv->lru_start);
 	priv->lru_start = NULL;
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	g_object_unref (priv->redirection_predictor);
+#endif
 
 	G_OBJECT_CLASS (soup_cache_parent_class)->finalize (object);
 }
@@ -1224,6 +1304,10 @@ soup_cache_constructed (GObject *object)
 		if (!g_file_test (priv->cache_dir, G_FILE_TEST_EXISTS | G_FILE_TEST_IS_DIR))
 			g_mkdir_with_parents (priv->cache_dir, 0700);
 	}
+
+#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)
+	priv->redirection_predictor = soup_redirection_predictor_new (priv->cache_dir);
+#endif
 
 	if (G_OBJECT_CLASS (soup_cache_parent_class)->constructed)
 		G_OBJECT_CLASS (soup_cache_parent_class)->constructed (object);
@@ -1311,6 +1395,14 @@ soup_cache_has_response (SoupCache *cache, SoupMessage *msg)
 	gpointer value;
 	int max_age, max_stale, min_fresh;
 	GList *lru_item, *item;
+#if ENABLE(TIZEN_CACHE_FILE_SIZE_VALIDATION)
+	GFile *file;
+	GFileInfo *file_info;
+	goffset file_size;
+#endif
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	const char *ua;
+#endif
 
 	entry = soup_cache_entry_lookup (cache, msg);
 
@@ -1319,6 +1411,22 @@ soup_cache_has_response (SoupCache *cache, SoupMessage *msg)
 	 */
 	if (!entry)
 		return SOUP_CACHE_RESPONSE_STALE;
+
+#if ENABLE(TIZEN_CACHE_FILE_SIZE_VALIDATION)
+	file = get_file_from_entry (cache, entry);
+	file_info = g_file_query_info (file, G_FILE_ATTRIBUTE_STANDARD_SIZE,
+				      G_FILE_QUERY_INFO_NONE, NULL, NULL);
+
+	if (file_info && (file_size = g_file_info_get_size (file_info)) != entry->length) {
+		soup_cache_entry_remove(cache, entry);
+		g_file_delete (file, NULL, NULL);
+		g_object_unref (file_info);
+		g_object_unref (file);
+		return SOUP_CACHE_RESPONSE_STALE;
+	}
+	g_object_unref (file_info);
+	g_object_unref (file);
+#endif
 
 	/* Increase hit count. Take sorting into account */
 	entry->hits++;
@@ -1372,6 +1480,15 @@ soup_cache_has_response (SoupCache *cache, SoupMessage *msg)
 	if (pragma && soup_header_contains (pragma, "no-cache"))
 		return SOUP_CACHE_RESPONSE_STALE;
 
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	ua = soup_message_headers_get_one (msg->request_headers, "User-Agent");
+
+	if (ua) {
+		if (strcmp (ua, entry->user_agent))
+			return SOUP_CACHE_RESPONSE_STALE;
+	}
+#endif
+
 	cache_control = soup_message_headers_get (msg->request_headers, "Cache-Control");
 	if (cache_control) {
 		GHashTable *hash = soup_header_parse_param_list (cache_control);
@@ -1386,7 +1503,11 @@ soup_cache_has_response (SoupCache *cache, SoupMessage *msg)
 			return SOUP_CACHE_RESPONSE_STALE;
 		}
 
+#if ENABLE (TIZEN_HANDLE_MALFORMED_MAX_AGE_HEADER)
+		if (g_hash_table_lookup_extended (hash, "max-age", NULL, &value) && value) {
+#else
 		if (g_hash_table_lookup_extended (hash, "max-age", NULL, &value)) {
+#endif
 			max_age = (int)MIN (g_ascii_strtoll (value, NULL, 10), G_MAXINT32);
 			/* Forcing cache revalidaton
 			 */
@@ -1540,6 +1661,7 @@ soup_cache_clear (SoupCache *cache)
 
 	// Cannot use g_hash_table_foreach as callbacks must not modify the hash table
 	entries = g_hash_table_get_values (cache->priv->cache);
+
 	g_list_foreach (entries, clear_cache_item, cache);
 	g_list_free (entries);
 }
@@ -1591,7 +1713,13 @@ soup_cache_generate_conditional_request (SoupCache *cache, SoupMessage *original
 #define SOUP_CACHE_FILE "soup.cache2"
 
 #define SOUP_CACHE_HEADERS_FORMAT "{ss}"
+
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+#define SOUP_CACHE_PHEADERS_FORMAT "(sbuuuuuqsa" SOUP_CACHE_HEADERS_FORMAT ")"
+#else
 #define SOUP_CACHE_PHEADERS_FORMAT "(sbuuuuuqa" SOUP_CACHE_HEADERS_FORMAT ")"
+#endif
+
 #define SOUP_CACHE_ENTRIES_FORMAT "(qa" SOUP_CACHE_PHEADERS_FORMAT ")"
 
 /* Basically the same format than above except that some strings are
@@ -1613,6 +1741,12 @@ pack_entry (gpointer data,
 		return;
 
 	g_variant_builder_open (entries_builder, G_VARIANT_TYPE (SOUP_CACHE_PHEADERS_FORMAT));
+#if ENABLE(TIZEN_FIX_PACK_ENTRY)
+	if (!g_utf8_validate (entry->uri, -1, NULL)) {
+		g_variant_builder_close (entries_builder);
+		return;
+	}
+#endif
 	g_variant_builder_add (entries_builder, "s", entry->uri);
 	g_variant_builder_add (entries_builder, "b", entry->must_revalidate);
 	g_variant_builder_add (entries_builder, "u", entry->freshness_lifetime);
@@ -1621,7 +1755,9 @@ pack_entry (gpointer data,
 	g_variant_builder_add (entries_builder, "u", entry->hits);
 	g_variant_builder_add (entries_builder, "u", entry->length);
 	g_variant_builder_add (entries_builder, "q", entry->status_code);
-
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	g_variant_builder_add (entries_builder, "s", entry->user_agent);
+#endif
 	/* Pack headers */
 	g_variant_builder_open (entries_builder, G_VARIANT_TYPE ("a" SOUP_CACHE_HEADERS_FORMAT));
 	soup_message_headers_iter_init (&iter, entry->headers);
@@ -1643,7 +1779,22 @@ soup_cache_dump (SoupCache *cache)
 	GVariant *cache_variant;
 
 	if (!g_list_length (cache->priv->lru_start))
+#if ENABLE(TIZEN_FIX_CACHE_DUMP)
+	{
+		GFile *file;
+		filename = g_build_filename (priv->cache_dir, SOUP_CACHE_FILE, NULL);
+		file = g_file_new_for_path (filename);
+		if (file) {
+			g_file_delete (file, NULL, NULL);
+			g_object_unref (file);
+		}
+		g_free (filename);
+
 		return;
+	}
+#else
+		return;
+#endif
 
 	/* Create the builder and iterate over all entries */
 	g_variant_builder_init (&entries_builder, G_VARIANT_TYPE (SOUP_CACHE_ENTRIES_FORMAT));
@@ -1699,6 +1850,9 @@ soup_cache_load (SoupCache *cache)
 	SoupCacheEntry *entry;
 	SoupCachePrivate *priv = cache->priv;
 	guint16 version, status_code;
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	const char *ua;
+#endif
 
 	filename = g_build_filename (priv->cache_dir, SOUP_CACHE_FILE, NULL);
 	if (!g_file_get_contents (filename, &contents, &length, NULL)) {
@@ -1719,10 +1873,17 @@ soup_cache_load (SoupCache *cache)
 		return;
 	}
 
+#if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
+	while (g_variant_iter_loop (entries_iter, SOUP_CACHE_PHEADERS_FORMAT,
+				    &url, &must_revalidate, &freshness_lifetime, &corrected_initial_age,
+				    &response_time, &hits, &length, &status_code, &ua,
+				    &headers_iter)) {
+#else
 	while (g_variant_iter_loop (entries_iter, SOUP_CACHE_PHEADERS_FORMAT,
 				    &url, &must_revalidate, &freshness_lifetime, &corrected_initial_age,
 				    &response_time, &hits, &length, &status_code,
 				    &headers_iter)) {
+#endif
 		const char *header_key, *header_value;
 		SoupMessageHeaders *headers;
 		SoupMessageHeadersIter soup_headers_iter;
@@ -1751,6 +1912,7 @@ soup_cache_load (SoupCache *cache)
 		entry->length = length;
 		entry->headers = headers;
 		entry->status_code = status_code;
+		entry->user_agent = g_strdup (ua);
 
 		if (!soup_cache_entry_insert (cache, entry, FALSE))
 			soup_cache_entry_free (entry, get_file_from_entry (cache, entry));
@@ -1776,3 +1938,31 @@ soup_cache_get_max_size (SoupCache *cache)
 {
 	return cache->priv->max_size;
 }
+
+#if ENABLE(TIZEN_UPDATE_CACHE_ENTRY_CONTENT_TYPE_HEADER)
+void soup_cache_entry_update_content_type (SoupCache *cache, SoupMessage *msg, const char *value)
+{
+	SoupCacheEntry *entry;
+
+	g_return_if_fail (SOUP_IS_CACHE (cache));
+
+	entry = soup_cache_entry_lookup (cache, msg);
+	if (entry)
+	    soup_message_headers_replace (entry->headers, "Content-Type", value);
+}
+#endif
+
+#if ENABLE (TIZEN_CACHE_ENTRY_VALIDATED_SET)
+void soup_cache_entry_validated_set (SoupCache *cache, SoupMessage *msg)
+{
+	SoupCacheEntry *entry = NULL;
+
+	g_return_if_fail (SOUP_IS_CACHE (cache));
+	g_return_if_fail (SOUP_IS_MESSAGE (msg));
+
+	entry = soup_cache_entry_lookup (cache, msg);
+	g_return_if_fail (entry);
+
+	entry->being_validated = FALSE;
+}
+#endif
