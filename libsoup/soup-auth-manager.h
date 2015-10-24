@@ -18,9 +18,12 @@ G_BEGIN_DECLS
 #define SOUP_IS_AUTH_MANAGER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((klass), SOUP_TYPE_AUTH_MANAGER))
 #define SOUP_AUTH_MANAGER_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj), SOUP_TYPE_AUTH_MANAGER, SoupAuthManagerClass))
 
+typedef struct SoupAuthManagerPrivate SoupAuthManagerPrivate;
+
 typedef struct {
 	GObject parent;
 
+	SoupAuthManagerPrivate *priv;
 } SoupAuthManager;
 
 typedef struct {
@@ -32,13 +35,9 @@ typedef struct {
 
 GType soup_auth_manager_get_type (void);
 
-void  soup_auth_manager_emit_authenticate (SoupAuthManager *manager,
-					   SoupMessage     *msg,
-					   SoupAuth        *auth,
-					   gboolean         retrying);
-
-char *soup_auth_manager_extract_challenge (const char      *challenges,
-					   const char      *scheme);
+void  soup_auth_manager_use_auth (SoupAuthManager *manager,
+				  SoupURI         *uri,
+				  SoupAuth        *auth);
 
 G_END_DECLS
 

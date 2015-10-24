@@ -1,33 +1,27 @@
 ## Process this file with automake to produce Makefile.in
 
+EXTRA_DIST =
+
 include $(GLIB_MAKEFILE)
 
 if OS_WIN32
 LIBWS2_32 = -lws2_32
 endif
 
-INCLUDES = 				\
+AM_CPPFLAGS = 				\
 	-DG_LOG_DOMAIN=\"libsoup\" 	\
+	-DLOCALEDIR=\"$(localedir)\"	\
 	-I$(top_srcdir)			\
+	-I$(top_builddir)		\
 	$(SOUP_DEBUG_FLAGS)		\
-	$(SOUP_MAINTAINER_FLAGS)	\
 	$(GLIB_CFLAGS)			\
 	$(XML_CFLAGS)			\
-	$(SQLITE_CFLAGS)		\
-	$(GNOME_KEYRING_CFLAGS)
+	$(SQLITE_CFLAGS)
 
 if TIZEN_DLOG
-INCLUDES +=			\
+AM_CPPFLAGS +=			\
 	$(TIZEN_DLOG_CFLAGS)
 endif
-
-if TIZEN_SPDY
-INCLUDES +=			\
-	$(TIZEN_SPINDLY_CFLAGS)
-endif
-
-INCLUDES +=			\
-	$(TIZEN_ENGINEER_MODE_FLAGS)
 
 libsoupincludedir = $(includedir)/libsoup-2.4/libsoup
 
@@ -38,11 +32,13 @@ soup_headers =			\
 	soup-auth-domain.h	\
 	soup-auth-domain-basic.h  \
 	soup-auth-domain-digest.h \
+	soup-auth-manager.h	\
 	soup-cache.h		\
 	soup-content-decoder.h	\
 	soup-content-sniffer.h	\
 	soup-cookie.h		\
 	soup-cookie-jar.h	\
+	soup-cookie-jar-db.h	\
 	soup-cookie-jar-text.h	\
 	soup-date.h		\
 	soup-form.h		\
@@ -54,6 +50,7 @@ soup_headers =			\
 	soup-method.h		\
 	soup-misc.h     	\
 	soup-multipart.h     	\
+	soup-multipart-input-stream.h \
 	soup-password-manager.h	\
 	soup-portability.h	\
 	soup-proxy-resolver.h	\
@@ -71,45 +68,49 @@ soup_headers =			\
 	soup-session-sync.h	\
 	soup-socket.h		\
 	soup-status.h		\
+	soup-tld.h		\
 	soup-types.h		\
 	soup-uri.h		\
 	soup-value-utils.h	\
 	soup-xmlrpc.h
 
-if SQLLITE_SUPPORT
-soup_headers +=		\
-	soup-cookie-jar-sqlite.h
+if SQLITE_SUPPORT
+soup_headers +=     \
+    soup-cookie-jar-sqlite.h
+endif
+if BUILD_LIBSOUP_GNOME
+soup_headers +=     \
+    soup-cookie-jar-sqlite.h
 endif
 
 libsoupinclude_HEADERS =	\
 	$(soup_headers)		\
 	soup-enum-types.h
 
+nodist_libsoupinclude_HEADERS =	\
+	soup-version.h
+
 lib_LTLIBRARIES = libsoup-2.4.la
 
 libsoup_2_4_la_LDFLAGS =	\
-	-version-info $(SOUP_CURRENT):$(SOUP_REVISION):$(SOUP_AGE) -no-undefined
+	-version-info $(SOUP_CURRENT):$(SOUP_REVISION):$(SOUP_AGE) \
+	-no-undefined \
+	-export-symbols $(srcdir)/libsoup-2.4.sym
+
+EXTRA_DIST += libsoup-2.4.sym
 
 libsoup_2_4_la_LIBADD =			\
 	$(GLIB_LIBS)			\
+	$(LIBWS2_32)			\
 	$(XML_LIBS)			\
-	-lz				\
-	$(LIBWS2_32)
-
-if SQLLITE_SUPPORT
-libsoup_2_4_la_LIBADD +=		\
 	$(SQLITE_LIBS)
-endif
+
+libsoup_2_4_la_LIBADD +=        \
+    $(SQLITE_LIBS)
 
 if TIZEN_DLOG
 libsoup_2_4_la_LIBADD +=		\
 	$(TIZEN_DLOG_LIBS)
-endif
-
-# Should use $(TIZEN_SPINDLY_LIBS) instead of -lspdy, but cannot because value of $(TIZEN_SPINDLY_LIBS) is wrong.
-if TIZEN_SPDY
-libsoup_2_4_la_LIBADD +=		\
-	-lspdy
 endif
 
 libsoup_2_4_la_SOURCES =		\
@@ -124,31 +125,45 @@ libsoup_2_4_la_SOURCES =		\
 	soup-auth-domain.c		\
 	soup-auth-domain-basic.c	\
 	soup-auth-domain-digest.c	\
-	soup-auth-manager.h		\
 	soup-auth-manager.c		\
-	soup-auth-manager-ntlm.h	\
-	soup-auth-manager-ntlm.c	\
+	soup-body-input-stream.h	\
+	soup-body-input-stream.c	\
+	soup-body-output-stream.h	\
+	soup-body-output-stream.c	\
 	soup-cache.c			\
+	soup-cache-input-stream.h	\
+	soup-cache-input-stream.c	\
 	soup-cache-private.h		\
+	soup-client-input-stream.h	\
+	soup-client-input-stream.c	\
 	soup-connection.h		\
 	soup-connection.c		\
+	soup-connection-auth.h		\
+	soup-connection-auth.c		\
 	soup-content-decoder.c		\
+	soup-content-processor.h	\
+	soup-content-processor.c	\
 	soup-content-sniffer.c		\
+	soup-content-sniffer-stream.h	\
+	soup-content-sniffer-stream.c	\
+	soup-converter-wrapper.h	\
+	soup-converter-wrapper.c	\
 	soup-cookie.c			\
 	soup-cookie-jar.c		\
+	soup-cookie-jar-db.c		\
 	soup-cookie-jar-text.c		\
 	soup-date.c			\
 	soup-directory-input-stream.h	\
 	soup-directory-input-stream.c	\
 	soup-enum-types.h		\
 	soup-enum-types.c		\
+	soup-filter-input-stream.c	\
+	soup-filter-input-stream.h	\
 	soup-form.c			\
 	soup-headers.c			\
-	soup-http-input-stream.h	\
-	soup-http-input-stream.c	\
+	soup-io-stream.h		\
+	soup-io-stream.c		\
 	soup-logger.c			\
-	soup-marshal.h			\
-	soup-marshal.c			\
 	soup-message.c			\
 	soup-message-body.c		\
 	soup-message-client-io.c	\
@@ -162,13 +177,14 @@ libsoup_2_4_la_SOURCES =		\
 	soup-misc.c     		\
 	soup-misc-private.h		\
 	soup-multipart.c	     	\
+	soup-multipart-input-stream.c	\
 	soup-password-manager.c		\
 	soup-path-map.h     		\
 	soup-path-map.c     		\
 	soup-proxy-resolver.c		\
 	soup-proxy-resolver-default.c	\
-	soup-proxy-resolver-static.h	\
-	soup-proxy-resolver-static.c	\
+	soup-proxy-resolver-wrapper.h	\
+	soup-proxy-resolver-wrapper.c	\
 	soup-proxy-uri-resolver.c	\
 	soup-request.c			\
 	soup-request-data.c		\
@@ -183,34 +199,25 @@ libsoup_2_4_la_SOURCES =		\
 	soup-session-sync.c		\
 	soup-socket.c			\
 	soup-status.c			\
+	soup-tld.c			\
+	soup-tld-private.h		\
 	soup-uri.c			\
 	soup-value-utils.c		\
-	soup-redirection-predictor.c	\
-	soup-adaptive-timeout.c	\
+	soup-version.c			\
 	soup-xmlrpc.c
 
-if TIZEN_SPDY
-libsoup_2_4_la_SOURCES +=               \
-	soup-connection-spdy-private.h		\
-	soup-connection-spdy.c				\
-	soup-message-io-spdy-private.h		\
-	soup-message-io-spdy.c
-endif
+# TLD rules
+EXTRA_DIST += tld-parser.py
 
-if SQLLITE_SUPPORT
-libsoup_2_4_la_SOURCES +=		\
-	soup-cookie-jar-sqlite.c
-endif
+TLD_DATA_FILE=$(top_srcdir)/data/effective_tld_names.dat
+
+tld_data.inc: tld-parser.py $(TLD_DATA_FILE)
+	$(srcdir)/tld-parser.py $(TLD_DATA_FILE) tld_data.inc
+
+libsoup_2_4_la_SOURCES +=       \
+    soup-cookie-jar-sqlite.c
 
 if BUILD_LIBSOUP_GNOME
-
-if OS_WIN32
-soup_password_manager_gnome_files =	
-else
-soup_password_manager_gnome_files =	\
-	soup-password-manager-gnome.h	\
-	soup-password-manager-gnome.c
-endif
 
 libsoupgnomeincludedir = $(includedir)/libsoup-gnome-2.4/libsoup
 
@@ -221,28 +228,31 @@ libsoupgnomeinclude_HEADERS =	\
 
 lib_LTLIBRARIES += libsoup-gnome-2.4.la
 
-libsoup_gnome_2_4_la_LDFLAGS = $(libsoup_2_4_la_LDFLAGS)
+libsoup_gnome_2_4_la_LDFLAGS =	\
+	-version-info $(SOUP_CURRENT):$(SOUP_REVISION):$(SOUP_AGE) \
+	-no-undefined \
+	-export-symbols $(srcdir)/libsoup-gnome-2.4.sym
+
+EXTRA_DIST += libsoup-gnome-2.4.sym
 
 libsoup_gnome_2_4_la_LIBADD =		\
 	libsoup-2.4.la			\
-	$(GLIB_LIBS)			\
-	$(SQLITE_LIBS)			\
-	$(GNOME_KEYRING_LIBS)
+	$(GLIB_LIBS)
 
 libsoup_gnome_2_4_la_SOURCES =		\
-	soup-cookie-jar-sqlite.c	\
 	soup-gnome-features.c		\
 	soup-proxy-resolver-gnome.h	\
 	soup-proxy-resolver-gnome.c	\
-	$(soup_password_manager_gnome_files)
+	soup-password-manager-gnome.h	\
+	soup-password-manager-gnome.c
 
 endif
 
-GLIB_GENERATED = soup-marshal.c soup-marshal.h
-GLIB_GENERATED += soup-enum-types.c soup-enum-types.h
-BUILT_SOURCES = $(GLIB_GENERATED)
+GLIB_GENERATED = soup-enum-types.c soup-enum-types.h
+BUILT_SOURCES = \
+	$(GLIB_GENERATED)   \
+	tld_data.inc
 
-soup_marshal_sources = $(libsoup_2_4_la_SOURCES) $(libsoup_gnome_2_4_la_SOURCES)
 soup_enum_types_sources = $(libsoupinclude_HEADERS) $(libsoupgnomeinclude_HEADERS)
 soup_enum_types_MKENUMS_C_FLAGS = --fhead "\#define LIBSOUP_USE_UNSTABLE_REQUEST_API"
 
@@ -258,13 +268,13 @@ if HAVE_INTROSPECTION
 
 # Core library
 gi_soup_files = \
-	$(filter-out soup.h soup-enum-types.% soup-marshal.% soup-proxy-resolver.h,\
+	$(filter-out soup.h soup-enum-types.% soup-proxy-resolver.h,\
 	   $(soup_headers) $(filter-out %.h, $(libsoup_2_4_la_SOURCES)))
 gi_built_soup_files = soup-enum-types.h
 
 Soup-2.4.gir: libsoup-2.4.la
 Soup_2_4_gir_INCLUDES = Gio-2.0
-Soup_2_4_gir_CFLAGS = $(INCLUDES)
+Soup_2_4_gir_CFLAGS = $(AM_CPPFLAGS) -DLIBSOUP_USE_UNSTABLE_REQUEST_API
 Soup_2_4_gir_LIBS = libsoup-2.4.la
 Soup_2_4_gir_EXPORT_PACKAGES = libsoup-2.4
 Soup_2_4_gir_SCANNERFLAGS = --c-include "libsoup/soup.h"
@@ -289,7 +299,7 @@ SoupGNOME_2_4_gir_SCANNERFLAGS =			\
 	--symbol-prefix=soup				\
 	--c-include "libsoup/soup-gnome.h"		\
 	--include-uninstalled=$(builddir)/Soup-2.4.gir
-SoupGNOME_2_4_gir_CFLAGS = $(INCLUDES)
+SoupGNOME_2_4_gir_CFLAGS = $(AM_CPPFLAGS)
 SoupGNOME_2_4_gir_LIBS = libsoup-gnome-2.4.la libsoup-2.4.la
 SoupGNOME_2_4_gir_FILES = $(addprefix $(srcdir)/,$(gi_soup_gnome_files))
 SoupGNOME_2_4_gir_EXPORT_PACKAGES = libsoup-gnome-2.4
@@ -304,6 +314,6 @@ gir_DATA = $(INTROSPECTION_GIRS)
 typelibdir = $(libdir)/girepository-1.0
 typelib_DATA = $(INTROSPECTION_GIRS:.gir=.typelib)
 
-CLEANFILES = $(gir_DATA) $(typelib_DATA)
+CLEANFILES = $(gir_DATA) $(typelib_DATA) $(BUILT_SOURCES)
 
 endif

@@ -4,25 +4,49 @@
  *
  * Copyright (C) 2000-2003, Ximian, Inc.
  */
-
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
 
-#include <stdlib.h>
 #include <string.h>
 
-#include "soup-address.h"
-#include "soup-auth.h"
-#include "soup-connection.h"
-#include "soup-enum-types.h"
-#include "soup-marshal.h"
 #include "soup-message.h"
+#include "soup.h"
+#include "soup-connection.h"
 #include "soup-message-private.h"
-#include "soup-misc.h"
-#include "soup-socket.h"
-#include "soup-uri.h"
 #include "TIZEN.h"
+
+#if ENABLE(TIZEN_PERFORMANCE_TEST_LOG)
+#include <sys/prctl.h>
+#ifndef PR_TASK_PERF_USER_TRACE
+#define PR_TASK_PERF_USER_TRACE 666
+#endif
+
+static void prctl_with_url(const char *prestr, const char *url)
+{
+	char s[256];
+	int lem_max = 120;
+	int len_pre = strlen(prestr);
+	int len_url = strlen(url);
+
+	strcpy(s, prestr);
+	if(len_pre + len_url < lem_max) {
+		strcpy(s+len_pre, url);
+	}
+	else {
+		int len_part = lem_max - len_pre - 10;
+		strncpy(s+len_pre, url, len_part );
+		strcpy(s+len_pre+len_part, "...");
+		strcpy(s+len_pre+len_part+3, url+len_url-7);															}
+		prctl(PR_TASK_PERF_USER_TRACE, s, strlen(s));
+}
+
+static void prctl_with_url_and_free(const char *prestr, char *url)
+{
+	prctl_with_url(prestr, url);
+	g_free(url);
+}
+#endif
 
 /**
  * SECTION:soup-message
@@ -32,9 +56,16 @@
  * A #SoupMessage represents an HTTP message that is being sent or
  * received.
  *
- * For client-side usage, you would create a #SoupMessage with
+ * For client-side usage, if you are using the traditional
+ * #SoupSession APIs (soup_session_queue_message() and
+ * soup_session_send_message()), you would create a #SoupMessage with
  * soup_message_new() or soup_message_new_from_uri(), set up its
- * fields appropriate, and send it via a #SoupSession.
+ * fields appropriately, and send it. If you are using the newer
+ * #SoupRequest API, you would create a request with
+ * soup_session_request_http() or soup_session_request_http_uri(), and
+ * the returned #SoupRequestHTTP will already have an associated
+ * #SoupMessage that you can retrieve via
+ * soup_request_http_get_message().
  *
  * For server-side usage, #SoupServer will create #SoupMessage<!--
  * -->s automatically for incoming requests, which your application
@@ -59,7 +90,7 @@
  *
  * Represents an HTTP message being sent or received.
  *
- * @status_code will normally be a #SoupKnownStatusCode, eg,
+ * @status_code will normally be a #SoupStatus value, eg,
  * %SOUP_STATUS_OK, though of course it might actually be an unknown
  * status code. @reason_phrase is the actual text returned from the
  * server, which may or may not correspond to the "standard"
@@ -72,17 +103,22 @@
  *
  * As described in the #SoupMessageBody documentation, the
  * @request_body and @response_body <literal>data</literal> fields
- * will not necessarily be filled in at all times. When they are
- * filled in, they will be terminated with a '\0' byte (which is not
- * included in the <literal>length</literal>), so you can use them as
- * ordinary C strings (assuming that you know that the body doesn't
- * have any other '\0' bytes).
+ * will not necessarily be filled in at all times. When the body
+ * fields are filled in, they will be terminated with a '\0' byte
+ * (which is not included in the <literal>length</literal>), so you
+ * can use them as ordinary C strings (assuming that you know that the
+ * body doesn't have any other '\0' bytes).
  *
- * For a client-side #SoupMessage, @request_body's %data is usually
- * filled in right before libsoup writes the request to the network,
- * but you should not count on this; use soup_message_body_flatten()
- * if you want to ensure that %data is filled in. @response_body's
- * %data will be filled in before #SoupMessage::finished is emitted.
+ * For a client-side #SoupMessage, @request_body's
+ * <literal>data</literal> is usually filled in right before libsoup
+ * writes the request to the network, but you should not count on
+ * this; use soup_message_body_flatten() if you want to ensure that
+ * <literal>data</literal> is filled in. If you are not using
+ * #SoupRequest to read the response, then @response_body's
+ * <literal>data</literal> will be filled in before
+ * #SoupMessage::finished is emitted. (If you are using #SoupRequest,
+ * then the message body is not accumulated by default, so
+ * @response_body's <literal>data</literal> will always be %NULL.)
  *
  * For a server-side #SoupMessage, @request_body's %data will be
  * filled in before #SoupMessage::got_body is emitted.
@@ -111,11 +147,18 @@ enum {
 
 	RESTARTED,
 	FINISHED,
-/* #if ENABLE(TIZEN_ON_AUTHENTICATION_REQUESTED) */
+#if ENABLE(TIZEN_ON_AUTHENTICATION_REQUESTED)
 	AUTHENTICATE,
-/* #endif */
+#endif
 
 	NETWORK_EVENT,
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+	DYNAMIC_CERTIFICATEPATH,
+#endif
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	ACCEPT_CERTIFICATE,
+#endif
+
 	LAST_SIGNAL
 };
 
@@ -133,23 +176,17 @@ enum {
 	PROP_REASON_PHRASE,
 	PROP_FIRST_PARTY,
 	PROP_REQUEST_BODY,
+	PROP_REQUEST_BODY_DATA,
 	PROP_REQUEST_HEADERS,
 	PROP_RESPONSE_BODY,
+	PROP_RESPONSE_BODY_DATA,
 	PROP_RESPONSE_HEADERS,
 	PROP_TLS_CERTIFICATE,
 	PROP_TLS_ERRORS,
-//#if ENABLE_TIZEN_SPDY
-	PROP_SYNC_CONTEXT,
-//#endif
+	PROP_PRIORITY,
+
 	LAST_PROP
 };
-
-static void got_body (SoupMessage *req);
-
-static void set_property (GObject *object, guint prop_id,
-			  const GValue *value, GParamSpec *pspec);
-static void get_property (GObject *object, guint prop_id,
-			  GValue *value, GParamSpec *pspec);
 
 static void
 soup_message_init (SoupMessage *msg)
@@ -157,6 +194,7 @@ soup_message_init (SoupMessage *msg)
 	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 
 	priv->http_version = priv->orig_http_version = SOUP_HTTP_1_1;
+	priv->priority = SOUP_MESSAGE_PRIORITY_NORMAL;
 
 	msg->request_body = soup_message_body_new ();
 	msg->request_headers = soup_message_headers_new (SOUP_MESSAGE_HEADERS_REQUEST);
@@ -165,7 +203,7 @@ soup_message_init (SoupMessage *msg)
 }
 
 static void
-finalize (GObject *object)
+soup_message_finalize (GObject *object)
 {
 	SoupMessage *msg = SOUP_MESSAGE (object);
 	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
@@ -174,27 +212,16 @@ finalize (GObject *object)
 	if (priv->chunk_allocator_dnotify)
 		priv->chunk_allocator_dnotify (priv->chunk_allocator_data);
 
-	if (priv->uri)
-		soup_uri_free (priv->uri);
-	if (priv->first_party)
-		soup_uri_free (priv->first_party);
-	if (priv->addr)
-		g_object_unref (priv->addr);
+	g_clear_pointer (&priv->uri, soup_uri_free);
+	g_clear_pointer (&priv->first_party, soup_uri_free);
+	g_clear_object (&priv->addr);
 
-	if (priv->auth)
-		g_object_unref (priv->auth);
-	if (priv->proxy_auth)
-		g_object_unref (priv->proxy_auth);
+	g_clear_object (&priv->auth);
+	g_clear_object (&priv->proxy_auth);
 
 	g_slist_free (priv->disabled_features);
 
-	while (priv->decoders) {
-		g_object_unref (priv->decoders->data);
-		priv->decoders = g_slist_delete_link (priv->decoders, priv->decoders);
-	}
-
-	if (priv->tls_certificate)
-		g_object_unref (priv->tls_certificate);
+	g_clear_object (&priv->tls_certificate);
 
 	soup_message_body_free (msg->request_body);
 	soup_message_headers_free (msg->request_headers);
@@ -207,6 +234,153 @@ finalize (GObject *object)
 }
 
 static void
+soup_message_set_property (GObject *object, guint prop_id,
+			   const GValue *value, GParamSpec *pspec)
+{
+	SoupMessage *msg = SOUP_MESSAGE (object);
+	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
+
+	switch (prop_id) {
+	case PROP_METHOD:
+		msg->method = g_intern_string (g_value_get_string (value));
+		break;
+	case PROP_URI:
+		soup_message_set_uri (msg, g_value_get_boxed (value));
+		break;
+	case PROP_HTTP_VERSION:
+		soup_message_set_http_version (msg, g_value_get_enum (value));
+		break;
+	case PROP_FLAGS:
+		soup_message_set_flags (msg, g_value_get_flags (value));
+		break;
+	case PROP_SERVER_SIDE:
+		priv->server_side = g_value_get_boolean (value);
+		if (priv->server_side) {
+			soup_message_headers_set_encoding (msg->response_headers,
+							   SOUP_ENCODING_CONTENT_LENGTH);
+		}
+		break;
+	case PROP_STATUS_CODE:
+		soup_message_set_status (msg, g_value_get_uint (value));
+		break;
+	case PROP_REASON_PHRASE:
+		soup_message_set_status_full (msg, msg->status_code,
+					      g_value_get_string (value));
+		break;
+	case PROP_FIRST_PARTY:
+		soup_message_set_first_party (msg, g_value_get_boxed (value));
+		break;
+	case PROP_TLS_CERTIFICATE:
+		if (priv->tls_certificate)
+			g_object_unref (priv->tls_certificate);
+		priv->tls_certificate = g_value_dup_object (value);
+		if (priv->tls_errors)
+			priv->msg_flags &= ~SOUP_MESSAGE_CERTIFICATE_TRUSTED;
+		else if (priv->tls_certificate)
+			priv->msg_flags |= SOUP_MESSAGE_CERTIFICATE_TRUSTED;
+		break;
+	case PROP_TLS_ERRORS:
+		priv->tls_errors = g_value_get_flags (value);
+		if (priv->tls_errors)
+			priv->msg_flags &= ~SOUP_MESSAGE_CERTIFICATE_TRUSTED;
+		else if (priv->tls_certificate)
+			priv->msg_flags |= SOUP_MESSAGE_CERTIFICATE_TRUSTED;
+		break;
+	case PROP_PRIORITY:
+		priv->priority = g_value_get_enum (value);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static void
+soup_message_get_property (GObject *object, guint prop_id,
+			   GValue *value, GParamSpec *pspec)
+{
+	SoupMessage *msg = SOUP_MESSAGE (object);
+	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
+	SoupBuffer *buf;
+
+	switch (prop_id) {
+	case PROP_METHOD:
+		g_value_set_string (value, msg->method);
+		break;
+	case PROP_URI:
+		g_value_set_boxed (value, priv->uri);
+		break;
+	case PROP_HTTP_VERSION:
+		g_value_set_enum (value, priv->http_version);
+		break;
+	case PROP_FLAGS:
+		g_value_set_flags (value, priv->msg_flags);
+		break;
+	case PROP_SERVER_SIDE:
+		g_value_set_boolean (value, priv->server_side);
+		break;
+	case PROP_STATUS_CODE:
+		g_value_set_uint (value, msg->status_code);
+		break;
+	case PROP_REASON_PHRASE:
+		g_value_set_string (value, msg->reason_phrase);
+		break;
+	case PROP_FIRST_PARTY:
+		g_value_set_boxed (value, priv->first_party);
+		break;
+	case PROP_REQUEST_BODY:
+		g_value_set_boxed (value, msg->request_body);
+		break;
+	case PROP_REQUEST_BODY_DATA:
+		buf = soup_message_body_flatten (msg->request_body);
+		g_value_take_boxed (value, soup_buffer_get_as_bytes (buf));
+		soup_buffer_free (buf);
+		break;
+	case PROP_REQUEST_HEADERS:
+		g_value_set_boxed (value, msg->request_headers);
+		break;
+	case PROP_RESPONSE_BODY:
+		g_value_set_boxed (value, msg->response_body);
+		break;
+	case PROP_RESPONSE_BODY_DATA:
+		buf = soup_message_body_flatten (msg->response_body);
+		g_value_take_boxed (value, soup_buffer_get_as_bytes (buf));
+		soup_buffer_free (buf);
+		break;
+	case PROP_RESPONSE_HEADERS:
+		g_value_set_boxed (value, msg->response_headers);
+		break;
+	case PROP_TLS_CERTIFICATE:
+		g_value_set_object (value, priv->tls_certificate);
+		break;
+	case PROP_TLS_ERRORS:
+		g_value_set_flags (value, priv->tls_errors);
+		break;
+	case PROP_PRIORITY:
+		g_value_set_enum (value, priv->priority);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static void
+soup_message_real_got_body (SoupMessage *msg)
+{
+	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
+	SoupMessageBody *body;
+
+	body = priv->server_side ? msg->request_body : msg->response_body;
+	if (soup_message_body_get_accumulate (body)) {
+		SoupBuffer *buffer;
+
+		buffer = soup_message_body_flatten (body);
+		soup_buffer_free (buffer);
+	}
+}
+
+static void
 soup_message_class_init (SoupMessageClass *message_class)
 {
 	GObjectClass *object_class = G_OBJECT_CLASS (message_class);
@@ -214,12 +388,12 @@ soup_message_class_init (SoupMessageClass *message_class)
 	g_type_class_add_private (message_class, sizeof (SoupMessagePrivate));
 
 	/* virtual method definition */
-	message_class->got_body = got_body;
+	message_class->got_body = soup_message_real_got_body;
 
 	/* virtual method override */
-	object_class->finalize = finalize;
-	object_class->set_property = set_property;
-	object_class->get_property = get_property;
+	object_class->finalize = soup_message_finalize;
+	object_class->set_property = soup_message_set_property;
+	object_class->get_property = soup_message_get_property;
 
 	/* signals */
 
@@ -236,7 +410,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, wrote_informational),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -254,7 +428,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, wrote_headers),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -276,7 +450,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, wrote_chunk),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -291,7 +465,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 * every successful write() call, not only after finishing a
 	 * complete "chunk".
 	 *
-	 * Since: 2.4.1
+	 * Since: 2.24
 	 **/
 	signals[WROTE_BODY_DATA] =
 		g_signal_new ("wrote_body_data",
@@ -299,7 +473,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      0, /* FIXME after next ABI break */
 			      NULL, NULL,
-			      _soup_marshal_NONE__BOXED,
+			      NULL,
 			      G_TYPE_NONE, 1,
 			      SOUP_TYPE_BUFFER);
 
@@ -320,7 +494,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, wrote_body),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -343,7 +517,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, got_informational),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -375,7 +549,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, got_headers),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -398,7 +572,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, got_chunk),
 			      NULL, NULL,
-			      _soup_marshal_NONE__BOXED,
+			      NULL,
 			      G_TYPE_NONE, 1,
 			      /* Use %G_SIGNAL_TYPE_STATIC_SCOPE so that
 			       * the %SOUP_MEMORY_TEMPORARY buffers used
@@ -427,7 +601,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, got_body),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -456,7 +630,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 * that sniffing could be done is delivered on the first
 	 * emission of #SoupMessage::got-chunk.
 	 *
-	 * Since: 2.27.3
+	 * Since: 2.28
 	 **/
 	signals[CONTENT_SNIFFED] =
 		g_signal_new ("content_sniffed",
@@ -464,7 +638,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      0,
 			      NULL, NULL,
-			      _soup_marshal_NONE__STRING_BOXED,
+			      NULL,
 			      G_TYPE_NONE, 2,
 			      G_TYPE_STRING,
 			      G_TYPE_HASH_TABLE);
@@ -484,7 +658,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, restarted),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -501,7 +675,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, finished),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -509,7 +683,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 * @msg: the message
 	 * @event: the network event
 	 * @connection: the current state of the network connection
-
+	 *
 	 * Emitted to indicate that some network-related event
 	 * related to @msg has occurred. This essentially proxies the
 	 * #GSocketClient::event signal, but only for events that
@@ -536,18 +710,50 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_TYPE_SOCKET_CLIENT_EVENT,
 			      G_TYPE_IO_STREAM);
 
-	/* #if ENABLE(TIZEN_ON_AUTHENTICATION_REQUESTED) */
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+	signals[DYNAMIC_CERTIFICATEPATH] =
+		g_signal_new ("dynamic-certificatePath",
+			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_SIGNAL_RUN_LAST,
+			      0,
+			      NULL, NULL,
+			      NULL,
+			      G_TYPE_POINTER, 1,
+			      G_TYPE_POINTER);
+#endif
+	/**
+	 * SoupMessage::accept-certificate:
+	 * @msg: the message
+	 * @certificate: the certificate
+	 * @error: the kind of the certificate errors
+	 *
+	 * Since: webengine2014
+	 **/
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	signals[ACCEPT_CERTIFICATE] =
+		g_signal_new ("accept_certificate",
+			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_SIGNAL_RUN_LAST,
+			      0,
+			      NULL, NULL,
+			      NULL,
+			      G_TYPE_BOOLEAN, 2,
+			      G_TYPE_TLS_CERTIFICATE,
+			      G_TYPE_TLS_CERTIFICATE_FLAGS);
+#endif
+
+#if ENABLE(TIZEN_ON_AUTHENTICATION_REQUESTED)
 	signals[AUTHENTICATE] =
 		g_signal_new ("authenticate",
 			      G_OBJECT_CLASS_TYPE (object_class),
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupMessageClass, authenticate),
 			      NULL, NULL,
-			      _soup_marshal_NONE__OBJECT_BOOLEAN,
+			      NULL,
 			      G_TYPE_NONE, 2,
 			      SOUP_TYPE_AUTH,
 			      G_TYPE_BOOLEAN);
-	/* #endif */
+#endif
 
 	/* properties */
 	/**
@@ -681,6 +887,28 @@ soup_message_class_init (SoupMessageClass *message_class)
 				    SOUP_TYPE_MESSAGE_BODY,
 				    G_PARAM_READABLE));
 	/**
+	 * SOUP_MESSAGE_REQUEST_BODY_DATA:
+	 *
+	 * Alias for the #SoupMessage:request-body-data property. (The
+	 * message's HTTP request body, as a #GBytes.)
+	 *
+	 * Since: 2.46
+	 **/
+	/**
+	 * SoupMessage:request-body-data:
+	 *
+	 * The message's HTTP request body, as a #GBytes.
+	 *
+	 * Since: 2.46
+	 **/
+	g_object_class_install_property (
+		object_class, PROP_REQUEST_BODY_DATA,
+		g_param_spec_boxed (SOUP_MESSAGE_REQUEST_BODY_DATA,
+				    "Request Body Data",
+				    "The HTTP request body",
+				    G_TYPE_BYTES,
+				    G_PARAM_READABLE));
+	/**
 	 * SOUP_MESSAGE_REQUEST_HEADERS:
 	 *
 	 * Alias for the #SoupMessage:request-headers property. (The
@@ -705,6 +933,28 @@ soup_message_class_init (SoupMessageClass *message_class)
 				    "Response Body",
 				    "The HTTP response content",
 				    SOUP_TYPE_MESSAGE_BODY,
+				    G_PARAM_READABLE));
+	/**
+	 * SOUP_MESSAGE_RESPONSE_BODY_DATA:
+	 *
+	 * Alias for the #SoupMessage:response-body-data property. (The
+	 * message's HTTP response body, as a #GBytes.)
+	 *
+	 * Since: 2.46
+	 **/
+	/**
+	 * SoupMessage:response-body-data:
+	 *
+	 * The message's HTTP response body, as a #GBytes.
+	 *
+	 * Since: 2.46
+	 **/
+	g_object_class_install_property (
+		object_class, PROP_RESPONSE_BODY_DATA,
+		g_param_spec_boxed (SOUP_MESSAGE_RESPONSE_BODY_DATA,
+				    "Response Body Data",
+				    "The HTTP response body",
+				    G_TYPE_BYTES,
 				    G_PARAM_READABLE));
 	/**
 	 * SOUP_MESSAGE_RESPONSE_HEADERS:
@@ -733,7 +983,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 * The #GTlsCertificate associated with the message
 	 *
 	 * Since: 2.34
-	 */
+	 */	 
 	g_object_class_install_property (
 		object_class, PROP_TLS_CERTIFICATE,
 		g_param_spec_object (SOUP_MESSAGE_TLS_CERTIFICATE,
@@ -750,12 +1000,12 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 * Since: 2.34
 	 **/
 	/**
-	 * SoupMessage:tls-certificate:
+	 * SoupMessage:tls-errors:
 	 *
 	 * The verification errors on #SoupMessage:tls-certificate
 	 *
 	 * Since: 2.34
-	 */
+	 */	 
 	g_object_class_install_property (
 		object_class, PROP_TLS_ERRORS,
 		g_param_spec_flags (SOUP_MESSAGE_TLS_ERRORS,
@@ -763,142 +1013,22 @@ soup_message_class_init (SoupMessageClass *message_class)
 				    "The verification errors on the message's TLS certificate",
 				    G_TYPE_TLS_CERTIFICATE_FLAGS, 0,
 				    G_PARAM_READWRITE));
-
-//#if ENABLE_TIZEN_SPDY
+	/**
+	 * SOUP_MESSAGE_PRIORITY:
+	 *
+	 * Sets the priority of the #SoupMessage. See
+	 * soup_message_set_priority() for further details.
+	 *
+	 * Since: 2.44
+	 **/
 	g_object_class_install_property (
-		object_class, PROP_SYNC_CONTEXT,
-		g_param_spec_boolean (SOUP_MESSAGE_USE_SYNC_CONTEXT,
-				    "flag to decide to msg sync or not",
-				    "Set TRUE if want to use sync context",
-				    TRUE,
-				    G_PARAM_READWRITE));
-//#endif
-}
-
-static void
-set_property (GObject *object, guint prop_id,
-	      const GValue *value, GParamSpec *pspec)
-{
-	SoupMessage *msg = SOUP_MESSAGE (object);
-	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
-
-	switch (prop_id) {
-	case PROP_METHOD:
-		msg->method = g_intern_string (g_value_get_string (value));
-		break;
-	case PROP_URI:
-		soup_message_set_uri (msg, g_value_get_boxed (value));
-		break;
-	case PROP_HTTP_VERSION:
-		soup_message_set_http_version (msg, g_value_get_enum (value));
-		break;
-	case PROP_FLAGS:
-		soup_message_set_flags (msg, g_value_get_flags (value));
-		break;
-	case PROP_SERVER_SIDE:
-		priv->server_side = g_value_get_boolean (value);
-		if (priv->server_side) {
-			soup_message_headers_set_encoding (msg->response_headers,
-							   SOUP_ENCODING_CONTENT_LENGTH);
-		}
-		break;
-	case PROP_STATUS_CODE:
-		soup_message_set_status (msg, g_value_get_uint (value));
-		break;
-	case PROP_REASON_PHRASE:
-		soup_message_set_status_full (msg, msg->status_code,
-					      g_value_get_string (value));
-		break;
-	case PROP_FIRST_PARTY:
-		soup_message_set_first_party (msg, g_value_get_boxed (value));
-		break;
-	case PROP_TLS_CERTIFICATE:
-		if (priv->tls_certificate)
-			g_object_unref (priv->tls_certificate);
-		priv->tls_certificate = g_value_dup_object (value);
-		if (priv->tls_errors)
-			priv->msg_flags &= ~SOUP_MESSAGE_CERTIFICATE_TRUSTED;
-		else if (priv->tls_certificate)
-			priv->msg_flags |= SOUP_MESSAGE_CERTIFICATE_TRUSTED;
-		break;
-	case PROP_TLS_ERRORS:
-		priv->tls_errors = g_value_get_flags (value);
-		if (priv->tls_errors)
-			priv->msg_flags &= ~SOUP_MESSAGE_CERTIFICATE_TRUSTED;
-		else if (priv->tls_certificate)
-			priv->msg_flags |= SOUP_MESSAGE_CERTIFICATE_TRUSTED;
-		break;
-//#if ENABLE_TIZEN_SPDY
-	case PROP_SYNC_CONTEXT:
-		priv->is_sync_context = g_value_get_boolean (value);
-		TIZEN_LOGD ("is_sync_context for msg[%p] allowed[%d]", msg, priv->is_sync_context);
-		break;
-//#endif
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
-}
-
-static void
-get_property (GObject *object, guint prop_id,
-	      GValue *value, GParamSpec *pspec)
-{
-	SoupMessage *msg = SOUP_MESSAGE (object);
-	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
-
-	switch (prop_id) {
-	case PROP_METHOD:
-		g_value_set_string (value, msg->method);
-		break;
-	case PROP_URI:
-		g_value_set_boxed (value, priv->uri);
-		break;
-	case PROP_HTTP_VERSION:
-		g_value_set_enum (value, priv->http_version);
-		break;
-	case PROP_FLAGS:
-		g_value_set_flags (value, priv->msg_flags);
-		break;
-	case PROP_SERVER_SIDE:
-		g_value_set_boolean (value, priv->server_side);
-		break;
-	case PROP_STATUS_CODE:
-		g_value_set_uint (value, msg->status_code);
-		break;
-	case PROP_REASON_PHRASE:
-		g_value_set_string (value, msg->reason_phrase);
-		break;
-	case PROP_FIRST_PARTY:
-		g_value_set_boxed (value, priv->first_party);
-		break;
-	case PROP_REQUEST_BODY:
-		g_value_set_boxed (value, msg->request_body);
-		break;
-	case PROP_REQUEST_HEADERS:
-		g_value_set_boxed (value, msg->request_headers);
-		break;
-	case PROP_RESPONSE_BODY:
-		g_value_set_boxed (value, msg->response_body);
-		break;
-	case PROP_RESPONSE_HEADERS:
-		g_value_set_boxed (value, msg->response_headers);
-		break;
-	case PROP_TLS_CERTIFICATE:
-		g_value_set_object (value, priv->tls_certificate);
-		break;
-	case PROP_TLS_ERRORS:
-		g_value_set_flags (value, priv->tls_errors);
-		break;
-//#if ENABLE(TIZEN_SPDY)
-	case PROP_SYNC_CONTEXT:
-		g_value_set_boolean (value, priv->is_sync_context);
-		break;
-//#endif
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
+		object_class, PROP_PRIORITY,
+		g_param_spec_enum (SOUP_MESSAGE_PRIORITY,
+				   "Priority",
+				   "The priority of the message",
+				   SOUP_TYPE_MESSAGE_PRIORITY,
+				   SOUP_MESSAGE_PRIORITY_NORMAL,
+				   G_PARAM_READWRITE));
 }
 
 
@@ -906,7 +1036,7 @@ get_property (GObject *object, guint prop_id,
  * soup_message_new:
  * @method: the HTTP method for the created request
  * @uri_string: the destination endpoint (as a string)
- *
+ * 
  * Creates a new empty #SoupMessage, which will connect to @uri
  *
  * Return value: the new #SoupMessage (or %NULL if @uri could not
@@ -955,11 +1085,12 @@ soup_message_new_from_uri (const char *method, SoupURI *uri)
 /**
  * soup_message_set_request:
  * @msg: the message
- * @content_type: MIME Content-Type of the body
+ * @content_type: (allow-none): MIME Content-Type of the body
  * @req_use: a #SoupMemoryUse describing how to handle @req_body
- * @req_body: a data buffer containing the body of the message request.
+ * @req_body: (allow-none) (array length=req_length) (element-type guint8):
+ *   a data buffer containing the body of the message request.
  * @req_length: the byte length of @req_body.
- *
+ * 
  * Convenience function to set the request body of a #SoupMessage. If
  * @content_type is %NULL, the request body must be empty as well.
  */
@@ -974,6 +1105,8 @@ soup_message_set_request (SoupMessage    *msg,
 	g_return_if_fail (content_type != NULL || req_length == 0);
 
 	if (content_type) {
+		g_warn_if_fail (strchr (content_type, '/') != NULL);
+
 		soup_message_headers_replace (msg->request_headers,
 					      "Content-Type", content_type);
 		soup_message_body_append (msg->request_body, req_use,
@@ -990,10 +1123,10 @@ soup_message_set_request (SoupMessage    *msg,
  * @msg: the message
  * @content_type: (allow-none): MIME Content-Type of the body
  * @resp_use: a #SoupMemoryUse describing how to handle @resp_body
- * @resp_body: (array length=resp_length) (element-type guint8): a data buffer
- * containing the body of the message response.
+ * @resp_body: (allow-none) (array length=resp_length) (element-type guint8):
+ *   a data buffer containing the body of the message response.
  * @resp_length: the byte length of @resp_body.
- *
+ * 
  * Convenience function to set the response body of a #SoupMessage. If
  * @content_type is %NULL, the response body must be empty as well.
  */
@@ -1008,6 +1141,8 @@ soup_message_set_response (SoupMessage    *msg,
 	g_return_if_fail (content_type != NULL || resp_length == 0);
 
 	if (content_type) {
+		g_warn_if_fail (strchr (content_type, '/') != NULL);
+
 		soup_message_headers_replace (msg->response_headers,
 					      "Content-Type", content_type);
 		soup_message_body_append (msg->response_body, resp_use,
@@ -1019,165 +1154,66 @@ soup_message_set_response (SoupMessage    *msg,
 	}
 }
 
-/**
- * soup_message_wrote_informational:
- * @msg: a #SoupMessage
- *
- * Emits the %wrote_informational signal, indicating that the IO layer
- * finished writing an informational (1xx) response for @msg.
- **/
 void
 soup_message_wrote_informational (SoupMessage *msg)
 {
 	g_signal_emit (msg, signals[WROTE_INFORMATIONAL], 0);
 }
 
-/**
- * soup_message_wrote_headers:
- * @msg: a #SoupMessage
- *
- * Emits the %wrote_headers signal, indicating that the IO layer
- * finished writing the (non-informational) headers for @msg.
- **/
 void
 soup_message_wrote_headers (SoupMessage *msg)
 {
 	g_signal_emit (msg, signals[WROTE_HEADERS], 0);
 }
 
-/**
- * soup_message_wrote_chunk:
- * @msg: a #SoupMessage
- *
- * Emits the %wrote_chunk signal, indicating that the IO layer
- * finished writing a chunk of @msg's body.
- **/
 void
 soup_message_wrote_chunk (SoupMessage *msg)
 {
 	g_signal_emit (msg, signals[WROTE_CHUNK], 0);
 }
 
-/**
- * soup_message_wrote_body_data:
- * @msg: a #SoupMessage
- * @chunk: the data written
- *
- * Emits the %wrote_body_data signal, indicating that the IO layer
- * finished writing a portion of @msg's body.
- **/
 void
 soup_message_wrote_body_data (SoupMessage *msg, SoupBuffer *chunk)
 {
 	g_signal_emit (msg, signals[WROTE_BODY_DATA], 0, chunk);
 }
 
-/**
- * soup_message_wrote_body:
- * @msg: a #SoupMessage
- *
- * Emits the %wrote_body signal, indicating that the IO layer finished
- * writing the body for @msg.
- **/
 void
 soup_message_wrote_body (SoupMessage *msg)
 {
 	g_signal_emit (msg, signals[WROTE_BODY], 0);
 }
 
-/**
- * soup_message_got_informational:
- * @msg: a #SoupMessage
- *
- * Emits the #SoupMessage::got_informational signal, indicating that
- * the IO layer read a complete informational (1xx) response for @msg.
- **/
 void
 soup_message_got_informational (SoupMessage *msg)
 {
 	g_signal_emit (msg, signals[GOT_INFORMATIONAL], 0);
 }
 
-/**
- * soup_message_got_headers:
- * @msg: a #SoupMessage
- *
- * Emits the #SoupMessage::got_headers signal, indicating that the IO
- * layer finished reading the (non-informational) headers for @msg.
- **/
 void
 soup_message_got_headers (SoupMessage *msg)
 {
 	g_signal_emit (msg, signals[GOT_HEADERS], 0);
 }
 
-/**
- * soup_message_got_chunk:
- * @msg: a #SoupMessage
- * @chunk: the newly-read chunk
- *
- * Emits the #SoupMessage::got_chunk signal, indicating that the IO
- * layer finished reading a chunk of @msg's body.
- **/
 void
 soup_message_got_chunk (SoupMessage *msg, SoupBuffer *chunk)
 {
 	g_signal_emit (msg, signals[GOT_CHUNK], 0, chunk);
 }
 
-static void
-got_body (SoupMessage *req)
-{
-	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (req);
-	SoupMessageBody *body;
-
-	body = priv->server_side ? req->request_body : req->response_body;
-	if (soup_message_body_get_accumulate (body)) {
-		SoupBuffer *buffer;
-
-		buffer = soup_message_body_flatten (body);
-		soup_buffer_free (buffer);
-	}
-}
-
-/**
- * soup_message_got_body:
- * @msg: a #SoupMessage
- *
- * Emits the #SoupMessage::got_body signal, indicating that the IO
- * layer finished reading the body for @msg.
- **/
 void
 soup_message_got_body (SoupMessage *msg)
 {
 	g_signal_emit (msg, signals[GOT_BODY], 0);
 }
 
-/**
- * soup_message_content_sniffed:
- * @msg: a #SoupMessage
- * @type: a string with the sniffed content type
- * @params: a #GHashTable with the parameters
- *
- * Emits the %content_sniffed signal, indicating that the IO layer
- * finished sniffing the content type for @msg. If content sniffing
- * will not be performed, due to the sniffer deciding to trust the
- * Content-Type sent by the server, this signal is emitted immediately
- * after #SoupMessage::got_headers, with %NULL as @content_type.
- **/
 void
 soup_message_content_sniffed (SoupMessage *msg, const char *content_type, GHashTable *params)
 {
 	g_signal_emit (msg, signals[CONTENT_SNIFFED], 0, content_type, params);
 }
 
-/**
- * soup_message_restarted:
- * @msg: a #SoupMessage
- *
- * Emits the %restarted signal, indicating that @msg should be
- * requeued.
- **/
 void
 soup_message_restarted (SoupMessage *msg)
 {
@@ -1189,23 +1225,11 @@ soup_message_restarted (SoupMessage *msg)
 	g_signal_emit (msg, signals[RESTARTED], 0);
 }
 
-/**
- * soup_message_finished:
- * @msg: a #SoupMessage
- *
- * Emits the %finished signal, indicating that @msg has been completely
- * processed.
- **/
 void
 soup_message_finished (SoupMessage *msg)
 {
-#if ENABLE(TIZEN_DLOG)
-	if (msg->status_code < 200 || msg->status_code > 299) {
-			char *uri = soup_uri_to_string(soup_message_get_uri(msg), FALSE);
-			TIZEN_LOGD ("msg[%p] status_code[%d] reason[%s]", msg, msg->status_code, msg->reason_phrase);
-			TIZEN_SECURE_LOGD ("msg[%p] url[%s] status_code[%d] reason[%s]", msg, uri, msg->status_code, msg->reason_phrase);
-			g_free(uri);
-	}
+#if ENABLE(TIZEN_PERFORMANCE_TEST_LOG)
+	prctl_with_url_and_free("[EVT] soup_msg_fin : ", soup_uri_to_string(soup_message_get_uri(msg), FALSE));
 #endif
 	g_signal_emit (msg, signals[FINISHED], 0);
 }
@@ -1219,13 +1243,50 @@ soup_message_network_event (SoupMessage         *msg,
 		       event, connection);
 }
 
-/* #if ENABLE(TIZEN_ON_AUTHENTICATION_REQUESTED) */
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+const char*
+soup_message_dynamic_client_certificate (SoupMessage         *msg,
+					 const char* current_host)
+{
+	const char* get_certpath = NULL;
+
+	g_signal_emit (msg, signals[DYNAMIC_CERTIFICATEPATH], 0,
+		       current_host, &get_certpath);
+	return get_certpath;
+}
+#endif
+
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+gboolean
+soup_message_accept_certificate (SoupMessage         *msg,
+				 GTlsCertificate* certificate,
+				 GTlsCertificateFlags errors)
+{
+	gboolean accept = TRUE;
+#if ENABLE(TIZEN_DLOG)
+	char *uri = soup_uri_to_string(soup_message_get_uri(msg), FALSE);
+
+	TIZEN_LOGI("[Accept-Certificate] Certificate error URL: %s", uri);
+#endif
+	g_signal_emit (msg, signals[ACCEPT_CERTIFICATE], 0,
+		       certificate, errors, &accept);
+
+#if ENABLE(TIZEN_DLOG)
+	if (uri)
+		g_free (uri);
+#endif
+
+	return accept;
+}
+#endif
+
+#if ENABLE(TIZEN_ON_AUTHENTICATION_REQUESTED)
 void
 soup_message_authenticate (SoupMessage *msg, SoupAuth *auth, gboolean retrying)
 {
 	g_signal_emit (msg, signals[AUTHENTICATE], 0, auth, retrying);
 }
-/* #endif */
+#endif
 
 static void
 header_handler_free (gpointer header_name, GClosure *closure)
@@ -1243,11 +1304,6 @@ header_handler_metamarshal (GClosure *closure, GValue *return_value,
 	const char *header_name = marshal_data;
 	SoupMessageHeaders *hdrs;
 
-#ifdef FIXME
-	if (priv->io_status != SOUP_MESSAGE_IO_STATUS_RUNNING)
-		return;
-#endif
-
 	hdrs = priv->server_side ? msg->request_headers : msg->response_headers;
 	if (soup_message_headers_get_one (hdrs, header_name)) {
 		closure->marshal (closure, return_value, n_param_values,
@@ -1257,7 +1313,7 @@ header_handler_metamarshal (GClosure *closure, GValue *return_value,
 }
 
 /**
- * soup_message_add_header_handler:
+ * soup_message_add_header_handler: (skip)
  * @msg: a #SoupMessage
  * @signal: signal to connect the handler to.
  * @header: HTTP response header to match against
@@ -1265,16 +1321,11 @@ header_handler_metamarshal (GClosure *closure, GValue *return_value,
  * @user_data: data to pass to @handler_cb
  *
  * Adds a signal handler to @msg for @signal, as with
- * g_signal_connect(), but with two differences: the @callback will
- * only be run if @msg has a header named @header, and it will only be
- * run if no earlier handler cancelled or requeued the message.
- *
- * If @signal is one of the "got" signals (eg, "got_headers"), or
- * "finished" or "restarted", then @header is matched against the
- * incoming message headers (that is, the #request_headers for a
- * client #SoupMessage, or the #response_headers for a server
- * #SoupMessage). If @signal is one of the "wrote" signals, then
- * @header is matched against the outgoing message headers.
+ * g_signal_connect(), but the @callback will only be run if @msg's
+ * incoming messages headers (that is, the
+ * <literal>request_headers</literal> for a client #SoupMessage, or
+ * the <literal>response_headers</literal> for a server #SoupMessage)
+ * contain a header named @header.
  *
  * Return value: the handler ID from g_signal_connect()
  **/
@@ -1312,11 +1363,6 @@ status_handler_metamarshal (GClosure *closure, GValue *return_value,
 	SoupMessage *msg = g_value_get_object (&param_values[0]);
 	guint status = GPOINTER_TO_UINT (marshal_data);
 
-#ifdef FIXME
-	if (priv->io_status != SOUP_MESSAGE_IO_STATUS_RUNNING)
-		return;
-#endif
-
 	if (msg->status_code == status) {
 		closure->marshal (closure, return_value, n_param_values,
 				  param_values, invocation_hint,
@@ -1325,7 +1371,7 @@ status_handler_metamarshal (GClosure *closure, GValue *return_value,
 }
 
 /**
- * soup_message_add_status_code_handler:
+ * soup_message_add_status_code_handler: (skip)
  * @msg: a #SoupMessage
  * @signal: signal to connect the handler to.
  * @status_code: status code to match against
@@ -1333,9 +1379,8 @@ status_handler_metamarshal (GClosure *closure, GValue *return_value,
  * @user_data: data to pass to @handler_cb
  *
  * Adds a signal handler to @msg for @signal, as with
- * g_signal_connect() but with two differences: the @callback will
- * only be run if @msg has the status @status_code, and it will only
- * be run if no earlier handler cancelled or requeued the message.
+ * g_signal_connect(), but the @callback will only be run if @msg has
+ * the status @status_code.
  *
  * @signal must be a signal that will be emitted after @msg's status
  * is set. For a client #SoupMessage, this means it can't be a "wrote"
@@ -1365,15 +1410,6 @@ soup_message_add_status_code_handler (SoupMessage *msg,
 }
 
 
-/**
- * soup_message_set_auth:
- * @msg: a #SoupMessage
- * @auth: a #SoupAuth, or %NULL
- *
- * Sets @msg to authenticate to its destination using @auth, which
- * must have already been fully authenticated. If @auth is %NULL, @msg
- * will not authenticate to its destination.
- **/
 void
 soup_message_set_auth (SoupMessage *msg, SoupAuth *auth)
 {
@@ -1382,7 +1418,6 @@ soup_message_set_auth (SoupMessage *msg, SoupAuth *auth)
 
 	g_return_if_fail (SOUP_IS_MESSAGE (msg));
 	g_return_if_fail (auth == NULL || SOUP_IS_AUTH (auth));
-	g_return_if_fail (auth == NULL || soup_auth_is_authenticated (auth));
 
 	priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 
@@ -1397,20 +1432,13 @@ soup_message_set_auth (SoupMessage *msg, SoupAuth *auth)
 
 	g_object_ref (priv->auth);
 	token = soup_auth_get_authorization (auth, msg);
-	soup_message_headers_replace (msg->request_headers,
-				      "Authorization", token);
-	g_free (token);
+	if (token) {
+		soup_message_headers_replace (msg->request_headers,
+					      "Authorization", token);
+		g_free (token);
+	}
 }
 
-/**
- * soup_message_get_auth:
- * @msg: a #SoupMessage
- *
- * Gets the #SoupAuth used by @msg for authentication.
- *
- * Return value: (transfer none): the #SoupAuth used by @msg for
- * authentication, or %NULL if @msg is unauthenticated.
- **/
 SoupAuth *
 soup_message_get_auth (SoupMessage *msg)
 {
@@ -1419,15 +1447,6 @@ soup_message_get_auth (SoupMessage *msg)
 	return SOUP_MESSAGE_GET_PRIVATE (msg)->auth;
 }
 
-/**
- * soup_message_set_proxy_auth:
- * @msg: a #SoupMessage
- * @auth: a #SoupAuth, or %NULL
- *
- * Sets @msg to authenticate to its proxy using @auth, which must have
- * already been fully authenticated. If @auth is %NULL, @msg will not
- * authenticate to its proxy.
- **/
 void
 soup_message_set_proxy_auth (SoupMessage *msg, SoupAuth *auth)
 {
@@ -1436,7 +1455,6 @@ soup_message_set_proxy_auth (SoupMessage *msg, SoupAuth *auth)
 
 	g_return_if_fail (SOUP_IS_MESSAGE (msg));
 	g_return_if_fail (auth == NULL || SOUP_IS_AUTH (auth));
-	g_return_if_fail (auth == NULL || soup_auth_is_authenticated (auth));
 
 	priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 
@@ -1456,15 +1474,6 @@ soup_message_set_proxy_auth (SoupMessage *msg, SoupAuth *auth)
 	g_free (token);
 }
 
-/**
- * soup_message_get_proxy_auth:
- * @msg: a #SoupMessage
- *
- * Gets the #SoupAuth used by @msg for authentication to its proxy..
- *
- * Return value: the #SoupAuth used by @msg for authentication to its
- * proxy, or %NULL if @msg isn't authenticated to its proxy.
- **/
 SoupAuth *
 soup_message_get_proxy_auth (SoupMessage *msg)
 {
@@ -1473,45 +1482,54 @@ soup_message_get_proxy_auth (SoupMessage *msg)
 	return SOUP_MESSAGE_GET_PRIVATE (msg)->proxy_auth;
 }
 
+SoupConnection *
+soup_message_get_connection (SoupMessage *msg)
+{
+	return SOUP_MESSAGE_GET_PRIVATE (msg)->connection;
+}
+
+void
+soup_message_set_connection (SoupMessage    *msg,
+			     SoupConnection *conn)
+{
+	SOUP_MESSAGE_GET_PRIVATE (msg)->connection = conn;
+}
+
 /**
  * soup_message_cleanup_response:
- * @req: a #SoupMessage
+ * @msg: a #SoupMessage
  *
- * Cleans up all response data on @req, so that the request can be sent
+ * Cleans up all response data on @msg, so that the request can be sent
  * again and receive a new response. (Eg, as a result of a redirect or
  * authorization request.)
  **/
 void
-soup_message_cleanup_response (SoupMessage *req)
+soup_message_cleanup_response (SoupMessage *msg)
 {
-	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (req);
+	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 
-	soup_message_body_truncate (req->response_body);
-	soup_message_headers_clear (req->response_headers);
+	soup_message_body_truncate (msg->response_body);
+	soup_message_headers_clear (msg->response_headers);
 	if (priv->server_side) {
-		soup_message_headers_set_encoding (req->response_headers,
+		soup_message_headers_set_encoding (msg->response_headers,
 						   SOUP_ENCODING_CONTENT_LENGTH);
 	}
 
-	while (priv->decoders) {
-		g_object_unref (priv->decoders->data);
-		priv->decoders = g_slist_delete_link (priv->decoders, priv->decoders);
-	}
 	priv->msg_flags &= ~SOUP_MESSAGE_CONTENT_DECODED;
 
-	req->status_code = SOUP_STATUS_NONE;
-	if (req->reason_phrase) {
-		g_free (req->reason_phrase);
-		req->reason_phrase = NULL;
+	msg->status_code = SOUP_STATUS_NONE;
+	if (msg->reason_phrase) {
+		g_free (msg->reason_phrase);
+		msg->reason_phrase = NULL;
 	}
 	priv->http_version = priv->orig_http_version;
 
-	g_object_notify (G_OBJECT (req), SOUP_MESSAGE_STATUS_CODE);
-	g_object_notify (G_OBJECT (req), SOUP_MESSAGE_REASON_PHRASE);
-	g_object_notify (G_OBJECT (req), SOUP_MESSAGE_HTTP_VERSION);
-	g_object_notify (G_OBJECT (req), SOUP_MESSAGE_FLAGS);
-	g_object_notify (G_OBJECT (req), SOUP_MESSAGE_TLS_CERTIFICATE);
-	g_object_notify (G_OBJECT (req), SOUP_MESSAGE_TLS_ERRORS);
+	g_object_notify (G_OBJECT (msg), SOUP_MESSAGE_STATUS_CODE);
+	g_object_notify (G_OBJECT (msg), SOUP_MESSAGE_REASON_PHRASE);
+	g_object_notify (G_OBJECT (msg), SOUP_MESSAGE_HTTP_VERSION);
+	g_object_notify (G_OBJECT (msg), SOUP_MESSAGE_FLAGS);
+	g_object_notify (G_OBJECT (msg), SOUP_MESSAGE_TLS_CERTIFICATE);
+	g_object_notify (G_OBJECT (msg), SOUP_MESSAGE_TLS_ERRORS);
 }
 
 /**
@@ -1532,10 +1550,15 @@ soup_message_cleanup_response (SoupMessage *req)
  * @SOUP_MESSAGE_CERTIFICATE_TRUSTED: if set after an https response
  *   has been received, indicates that the server's SSL certificate is
  *   trusted according to the session's CA.
- * @SOUP_MESSAGE_NEW_CONNECTION: The message should be sent on a
- *   newly-created connection, not reusing an existing persistent
- *   connection. Note that messages with non-idempotent
- *   #SoupMessage:method<!-- -->s behave this way by default.
+ * @SOUP_MESSAGE_NEW_CONNECTION: Requests that the message should be
+ *   sent on a newly-created connection, not reusing an existing
+ *   persistent connection. Note that messages with non-idempotent
+ *   #SoupMessage:method<!-- -->s behave this way by default, unless
+ *   #SOUP_MESSAGE_IDEMPOTENT is set.
+ * @SOUP_MESSAGE_IDEMPOTENT: The message is considered idempotent,
+ *   regardless its #SoupMessage:method, and allows reuse of existing
+ *   idle connections, instead of always requiring a new one, unless
+ *   #SOUP_MESSAGE_NEW_CONNECTION is set.
  *
  * Various flags that can be set on a #SoupMessage to alter its
  * behavior.
@@ -1821,6 +1844,9 @@ soup_message_set_status_full (SoupMessage *msg,
  * becomes possible to allocate a new buffer.
  *
  * Return value: the new buffer (or %NULL)
+ *
+ * Deprecated: Use #SoupRequest if you want to read into your
+ * own buffers.
  **/
 
 /**
@@ -1832,11 +1858,13 @@ soup_message_set_status_full (SoupMessage *msg,
  * destroyed
  *
  * Sets an alternate chunk-allocation function to use when reading
- * @msg's body. Every time data is available to read, libsoup will
- * call @allocator, which should return a #SoupBuffer. (See
- * #SoupChunkAllocator for additional details.) Libsoup will then read
- * data from the network into that buffer, and update the buffer's
- * <literal>length</literal> to indicate how much data it read.
+ * @msg's body when using the traditional (ie,
+ * non-#SoupRequest<!-- -->-based) API. Every time data is available
+ * to read, libsoup will call @allocator, which should return a
+ * #SoupBuffer. (See #SoupChunkAllocator for additional details.)
+ * Libsoup will then read data from the network into that buffer, and
+ * update the buffer's <literal>length</literal> to indicate how much
+ * data it read.
  *
  * Generally, a custom chunk allocator would be used in conjunction
  * with soup_message_body_set_accumulate() %FALSE and
@@ -1857,6 +1885,10 @@ soup_message_set_status_full (SoupMessage *msg,
  * you'll need to ref the #SoupBuffer (or its owner, in the
  * soup_buffer_new_with_owner() case) to ensure that the data remains
  * valid.
+ *
+ * Deprecated: #SoupRequest provides a much simpler API that lets you
+ * read the response directly into your own buffers without needing to
+ * mess with callbacks, pausing/unpausing, etc.
  **/
 void
 soup_message_set_chunk_allocator (SoupMessage *msg,
@@ -1886,10 +1918,8 @@ soup_message_set_chunk_allocator (SoupMessage *msg,
  * This disables the actions of #SoupSessionFeature<!-- -->s with the
  * given @feature_type (or a subclass of that type) on @msg, so that
  * @msg is processed as though the feature(s) hadn't been added to the
- * session. Eg, passing #SOUP_TYPE_PROXY_URI_RESOLVER for @feature_type
- * will disable proxy handling and cause @msg to be sent directly to
- * the indicated origin server, regardless of system proxy
- * configuration.
+ * session. Eg, passing #SOUP_TYPE_CONTENT_SNIFFER for @feature_type
+ * will disable Content-Type sniffing on the message.
  *
  * You must call this before queueing @msg on a session; calling it on
  * a message that has already been queued is undefined. In particular,
@@ -1933,9 +1963,9 @@ soup_message_disables_feature (SoupMessage *msg, gpointer feature)
  * @msg: a #SoupMessage
  *
  * Gets @msg's first-party #SoupURI
- *
+ * 
  * Returns: (transfer none): the @msg's first party #SoupURI
- *
+ * 
  * Since: 2.30
  **/
 SoupURI *
@@ -1953,7 +1983,7 @@ soup_message_get_first_party (SoupMessage *msg)
  * soup_message_set_first_party:
  * @msg: a #SoupMessage
  * @first_party: the #SoupURI for the @msg's first party
- *
+ * 
  * Sets @first_party as the main document #SoupURI for @msg. For
  * details of when and how this is used refer to the documentation for
  * #SoupCookieJarAcceptPolicy.
@@ -2025,11 +2055,13 @@ soup_message_set_https_status (SoupMessage *msg, SoupConnection *conn)
  * @certificate: (out) (transfer none): @msg's TLS certificate
  * @errors: (out): the verification status of @certificate
  *
- * If @msg is using https, this retrieves the #GTlsCertificate
- * associated with its connection, and the #GTlsCertificateFlags showing
- * what problems, if any, have been found with that certificate.
+ * If @msg is using https (or attempted to use https but got
+ * %SOUP_STATUS_SSL_FAILED), this retrieves the #GTlsCertificate
+ * associated with its connection, and the #GTlsCertificateFlags
+ * showing what problems, if any, have been found with that
+ * certificate.
  *
- * Return value: %TRUE if @msg uses https, %FALSE if not
+ * Return value: %TRUE if @msg used/attempted https, %FALSE if not
  *
  * Since: 2.34
  */
@@ -2085,21 +2117,107 @@ soup_message_set_redirect (SoupMessage *msg, guint status_code,
 	g_free (location_str);
 	soup_uri_free (location);
 }
-//#if ENABLE_TIZEN_SPDY
-gboolean
-soup_message_is_using_sync_context (SoupMessage *msg)
+
+void
+soup_message_set_soup_request (SoupMessage *msg,
+			       SoupRequest *req)
+{
+	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
+
+	priv->request = req;
+}
+
+/**
+ * soup_message_get_soup_request:
+ * @msg: a #SoupMessage
+ *
+ * If @msg is associated with a #SoupRequest, this returns that
+ * request. Otherwise it returns %NULL.
+ *
+ * Return value: (transfer none): @msg's associated #SoupRequest
+ *
+ * Since: 2.42
+ */
+SoupRequest *
+soup_message_get_soup_request (SoupMessage *msg)
 {
 	SoupMessagePrivate *priv;
 
-	g_return_val_if_fail (SOUP_IS_MESSAGE (msg), FALSE);
+	g_return_val_if_fail (SOUP_IS_MESSAGE (msg), NULL);
 
 	priv = SOUP_MESSAGE_GET_PRIVATE (msg);
-
-	return priv->is_sync_context;
+	return priv->request;
 }
-//#endif
 
-// #if ENABL(TIZEN_CERTIFICATE_FILE_SET)
+/**
+ * SoupMessagePriority:
+ * @SOUP_MESSAGE_PRIORITY_VERY_LOW: The lowest priority, the messages
+ *   with this priority will be the last ones to be attended.
+ * @SOUP_MESSAGE_PRIORITY_LOW: Use this for low priority messages, a
+ *   #SoupMessage with the default priority will be processed first.
+ * @SOUP_MESSAGE_PRIORITY_NORMAL: The default priotity, this is the
+ *   priority assigned to the #SoupMessage by default.
+ * @SOUP_MESSAGE_PRIORITY_HIGH: High priority, a #SoupMessage with
+ *   this priority will be processed before the ones with the default
+ *   priority.
+ * @SOUP_MESSAGE_PRIORITY_VERY_HIGH: The highest priority, use this
+ *   for very urgent #SoupMessage as they will be the first ones to be
+ *   attended.
+ *
+ * Priorities that can be set on a #SoupMessage to instruct the
+ * message queue to process it before any other message with lower
+ * priority.
+ **/
+
+/**
+ * soup_message_set_priority:
+ * @msg: a #SoupMessage
+ * @priority: the #SoupMessagePriority
+ *
+ * Sets the priority of a message. Note that this won't have any
+ * effect unless used before the message is added to the session's
+ * message processing queue.
+ *
+ * The message will be placed just before any other previously added
+ * message with lower priority (messages with the same priority are
+ * processed on a FIFO basis).
+ *
+ * Setting priorities does not currently work with #SoupSessionSync
+ * (or with synchronous messages on a plain #SoupSession) because in
+ * the synchronous/blocking case, priority ends up being determined
+ * semi-randomly by thread scheduling.
+ *
+ * Since: 2.44
+ */
+void
+soup_message_set_priority (SoupMessage        *msg,
+			   SoupMessagePriority priority)
+{
+	g_return_if_fail (SOUP_IS_MESSAGE (msg));
+
+	g_object_set (msg, SOUP_MESSAGE_PRIORITY, priority, NULL);
+}
+
+/**
+ * soup_message_get_priority:
+ * @msg: a #SoupMessage
+ *
+ * Retrieves the #SoupMessagePriority. If not set this value defaults
+ * to #SOUP_MESSAGE_PRIORITY_NORMAL.
+ *
+ * Return value: the priority of the message.
+ *
+ * Since: 2.44
+ */
+SoupMessagePriority
+soup_message_get_priority (SoupMessage *msg)
+{
+	g_return_val_if_fail (SOUP_IS_MESSAGE (msg), SOUP_MESSAGE_PRIORITY_NORMAL);
+
+	return SOUP_MESSAGE_GET_PRIVATE (msg)->priority;
+}
+
+#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
 gboolean soup_message_is_from_session_restore (SoupMessage *msg)
 {
 	char *target_field = "Cache-Control";
@@ -2118,4 +2236,4 @@ gboolean soup_message_is_from_session_restore (SoupMessage *msg)
 
 	return FALSE;
 }
-// #endif
+#endif

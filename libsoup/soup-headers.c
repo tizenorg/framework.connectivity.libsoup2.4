@@ -7,12 +7,9 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <ctype.h>
 
 #include "soup-headers.h"
-#include "soup-misc.h"
-#include "soup-uri.h"
+#include "soup.h"
 
 /**
  * soup_headers_parse:
@@ -601,11 +598,7 @@ soup_header_parse_quality_list (const char *header, GSList **unacceptable)
 void
 soup_header_free_list (GSList *list)
 {
-	GSList *l;
-
-	for (l = list; l; l = l->next)
-		g_free (l->data);
-	g_slist_free (list);
+	g_slist_free_full (list, g_free);
 }
 
 /**
@@ -709,14 +702,11 @@ parse_param_list (const char *header, char delim)
 	char *item, *eq, *name_end, *value;
 	gboolean override;
 
-	list = parse_list (header, delim);
-	if (!list)
-		return NULL;
-
 	params = g_hash_table_new_full (soup_str_case_hash, 
 					soup_str_case_equal,
 					g_free, NULL);
 
+	list = parse_list (header, delim);
 	for (iter = list; iter; iter = iter->next) {
 		item = iter->data;
 		override = FALSE;

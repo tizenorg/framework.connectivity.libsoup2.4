@@ -9,23 +9,15 @@
 #include <config.h>
 #endif
 
-#include <stdio.h>
 #include <string.h>
 
-#include "soup-cookie.h"
 #include "soup-cookie-jar.h"
-#include "soup-date.h"
-#include "soup-enum-types.h"
-#include "soup-marshal.h"
-#include "soup-message.h"
-#include "soup-session-feature.h"
-#include "soup-uri.h"
-/*TIZEN_patch*/
+#include "soup.h"
 #include "TIZEN.h"
 
 /**
  * SECTION:soup-cookie-jar
- * @short_description: Automatic cookie handling for #SoupSession
+ * @short_description: Automatic cookie handling for SoupSession
  *
  * A #SoupCookieJar stores #SoupCookie<!-- -->s and arrange for them
  * to be sent with the appropriate #SoupMessage<!-- -->s.
@@ -36,14 +28,8 @@
  * Note that the base #SoupCookieJar class does not support any form
  * of long-term cookie persistence.
  **/
+
 static void soup_cookie_jar_session_feature_init (SoupSessionFeatureInterface *feature_interface, gpointer interface_data);
-static void request_queued (SoupSessionFeature *feature, SoupSession *session,
-			    SoupMessage *msg);
-static void request_started (SoupSessionFeature *feature, SoupSession *session,
-			     SoupMessage *msg, SoupSocket *socket);
-static void request_unqueued (SoupSessionFeature *feature, SoupSession *session,
-			      SoupMessage *msg);
-static gboolean is_persistent (SoupCookieJar *jar);
 
 G_DEFINE_TYPE_WITH_CODE (SoupCookieJar, soup_cookie_jar, G_TYPE_OBJECT,
 			 G_IMPLEMENT_INTERFACE (SOUP_TYPE_SESSION_FEATURE,
@@ -73,11 +59,6 @@ typedef struct {
 } SoupCookieJarPrivate;
 #define SOUP_COOKIE_JAR_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_COOKIE_JAR, SoupCookieJarPrivate))
 
-static void set_property (GObject *object, guint prop_id,
-			  const GValue *value, GParamSpec *pspec);
-static void get_property (GObject *object, guint prop_id,
-			  GValue *value, GParamSpec *pspec);
-
 static void
 soup_cookie_jar_init (SoupCookieJar *jar)
 {
@@ -88,13 +69,10 @@ soup_cookie_jar_init (SoupCookieJar *jar)
 					       g_free, NULL);
 	priv->serials = g_hash_table_new (NULL, NULL);
 	priv->accept_policy = SOUP_COOKIE_JAR_ACCEPT_ALWAYS;
-#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
-	soup_date_get_current_system_year();
-#endif
 }
 
 static void
-constructed (GObject *object)
+soup_cookie_jar_constructed (GObject *object)
 {
 	SoupCookieJarPrivate *priv = SOUP_COOKIE_JAR_GET_PRIVATE (object);
 
@@ -102,7 +80,7 @@ constructed (GObject *object)
 }
 
 static void
-finalize (GObject *object)
+soup_cookie_jar_finalize (GObject *object)
 {
 	SoupCookieJarPrivate *priv = SOUP_COOKIE_JAR_GET_PRIVATE (object);
 	GHashTableIter iter;
@@ -118,21 +96,67 @@ finalize (GObject *object)
 }
 
 static void
+soup_cookie_jar_set_property (GObject *object, guint prop_id,
+			      const GValue *value, GParamSpec *pspec)
+{
+	SoupCookieJarPrivate *priv =
+		SOUP_COOKIE_JAR_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_READ_ONLY:
+		priv->read_only = g_value_get_boolean (value);
+		break;
+	case PROP_ACCEPT_POLICY:
+		priv->accept_policy = g_value_get_enum (value);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static void
+soup_cookie_jar_get_property (GObject *object, guint prop_id,
+			      GValue *value, GParamSpec *pspec)
+{
+	SoupCookieJarPrivate *priv =
+		SOUP_COOKIE_JAR_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_READ_ONLY:
+		g_value_set_boolean (value, priv->read_only);
+		break;
+	case PROP_ACCEPT_POLICY:
+		g_value_set_enum (value, priv->accept_policy);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static gboolean
+soup_cookie_jar_real_is_persistent (SoupCookieJar *jar)
+{
+	return FALSE;
+}
+
+static void
 soup_cookie_jar_class_init (SoupCookieJarClass *jar_class)
 {
 	GObjectClass *object_class = G_OBJECT_CLASS (jar_class);
 
 	g_type_class_add_private (jar_class, sizeof (SoupCookieJarPrivate));
 
-	object_class->constructed = constructed;
-	object_class->finalize = finalize;
-	object_class->set_property = set_property;
-	object_class->get_property = get_property;
+	object_class->constructed = soup_cookie_jar_constructed;
+	object_class->finalize = soup_cookie_jar_finalize;
+	object_class->set_property = soup_cookie_jar_set_property;
+	object_class->get_property = soup_cookie_jar_get_property;
 
-	jar_class->is_persistent = is_persistent;
+	jar_class->is_persistent = soup_cookie_jar_real_is_persistent;
 
 	/**
-	 * SoupCookieJar::changed
+	 * SoupCookieJar::changed:
 	 * @jar: the #SoupCookieJar
 	 * @old_cookie: the old #SoupCookie value
 	 * @new_cookie: the new #SoupCookie value
@@ -151,7 +175,7 @@ soup_cookie_jar_class_init (SoupCookieJarClass *jar_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupCookieJarClass, changed),
 			      NULL, NULL,
-			      _soup_marshal_NONE__BOXED_BOXED,
+			      NULL,
 			      G_TYPE_NONE, 2, 
 			      SOUP_TYPE_COOKIE | G_SIGNAL_TYPE_STATIC_SCOPE,
 			      SOUP_TYPE_COOKIE | G_SIGNAL_TYPE_STATIC_SCOPE);
@@ -194,55 +218,6 @@ soup_cookie_jar_class_init (SoupCookieJarClass *jar_class)
 				   G_PARAM_READWRITE));
 }
 
-static void
-soup_cookie_jar_session_feature_init (SoupSessionFeatureInterface *feature_interface,
-				      gpointer interface_data)
-{
-	feature_interface->request_queued = request_queued;
-	feature_interface->request_started = request_started;
-	feature_interface->request_unqueued = request_unqueued;
-}
-
-static void
-set_property (GObject *object, guint prop_id,
-	      const GValue *value, GParamSpec *pspec)
-{
-	SoupCookieJarPrivate *priv =
-		SOUP_COOKIE_JAR_GET_PRIVATE (object);
-
-	switch (prop_id) {
-	case PROP_READ_ONLY:
-		priv->read_only = g_value_get_boolean (value);
-		break;
-	case PROP_ACCEPT_POLICY:
-		priv->accept_policy = g_value_get_enum (value);
-		break;
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
-}
-
-static void
-get_property (GObject *object, guint prop_id,
-	      GValue *value, GParamSpec *pspec)
-{
-	SoupCookieJarPrivate *priv =
-		SOUP_COOKIE_JAR_GET_PRIVATE (object);
-
-	switch (prop_id) {
-	case PROP_READ_ONLY:
-		g_value_set_boolean (value, priv->read_only);
-		break;
-	case PROP_ACCEPT_POLICY:
-		g_value_set_enum (value, priv->accept_policy);
-		break;
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
-}
-
 /**
  * soup_cookie_jar_new:
  *
@@ -254,7 +229,7 @@ get_property (GObject *object, guint prop_id,
  * Since: 2.24
  **/
 SoupCookieJar *
-soup_cookie_jar_new (void)
+soup_cookie_jar_new (void) 
 {
 	return g_object_new (SOUP_TYPE_COOKIE_JAR, NULL);
 }
@@ -266,17 +241,15 @@ soup_cookie_jar_new (void)
  * This function exists for backward compatibility, but does not do
  * anything any more; cookie jars are saved automatically when they
  * are changed.
+ *
+ * Since: 2.24
+ *
+ * Deprecated: This is a no-op.
  */
 void
 soup_cookie_jar_save (SoupCookieJar *jar)
 {
 	/* Does nothing, obsolete */
-}
-
-static gboolean
-is_persistent (SoupCookieJar *jar)
-{
-	return FALSE;
 }
 
 static void
@@ -324,41 +297,15 @@ compare_cookies (gconstpointer a, gconstpointer b, gpointer jar)
 	return aserial - bserial;
 }
 
-/**
- * soup_cookie_jar_get_cookies:
- * @jar: a #SoupCookieJar
- * @uri: a #SoupURI
- * @for_http: whether or not the return value is being passed directly
- * to an HTTP operation
- *
- * Retrieves (in Cookie-header form) the list of cookies that would
- * be sent with a request to @uri.
- *
- * If @for_http is %TRUE, the return value will include cookies marked
- * "HttpOnly" (that is, cookies that the server wishes to keep hidden
- * from client-side scripting operations such as the JavaScript
- * document.cookies property). Since #SoupCookieJar sets the Cookie
- * header itself when making the actual HTTP request, you should
- * almost certainly be setting @for_http to %FALSE if you are calling
- * this.
- *
- * Return value: the cookies, in string form, or %NULL if there are no
- * cookies for @uri.
- *
- * Since: 2.24
- **/
-char *
-soup_cookie_jar_get_cookies (SoupCookieJar *jar, SoupURI *uri,
-			     gboolean for_http)
+static GSList *
+get_cookies (SoupCookieJar *jar, SoupURI *uri, gboolean for_http, gboolean copy_cookies)
 {
 	SoupCookieJarPrivate *priv;
 	GSList *cookies, *domain_cookies;
-	char *domain, *cur, *next_domain, *result;
+	char *domain, *cur, *next_domain;
 	GSList *new_head, *cookies_to_remove = NULL, *p;
 
-	g_return_val_if_fail (SOUP_IS_COOKIE_JAR (jar), NULL);
 	priv = SOUP_COOKIE_JAR_GET_PRIVATE (jar);
-	g_return_val_if_fail (uri != NULL, NULL);
 
 	if (!uri->host)
 		return NULL;
@@ -386,7 +333,7 @@ soup_cookie_jar_get_cookies (SoupCookieJar *jar, SoupURI *uri,
 						     new_head);
 			} else if (soup_cookie_applies_to_uri (cookie, uri) &&
 				   (for_http || !cookie->http_only))
-				cookies = g_slist_append (cookies, cookie);
+				cookies = g_slist_append (cookies, copy_cookies ? soup_cookie_copy (cookie) : cookie);
 
 			domain_cookies = next;
 		}
@@ -404,9 +351,45 @@ soup_cookie_jar_get_cookies (SoupCookieJar *jar, SoupURI *uri,
 	}
 	g_slist_free (cookies_to_remove);
 
+	return g_slist_sort_with_data (cookies, compare_cookies, jar);
+}
+
+/**
+ * soup_cookie_jar_get_cookies:
+ * @jar: a #SoupCookieJar
+ * @uri: a #SoupURI
+ * @for_http: whether or not the return value is being passed directly
+ * to an HTTP operation
+ *
+ * Retrieves (in Cookie-header form) the list of cookies that would
+ * be sent with a request to @uri.
+ *
+ * If @for_http is %TRUE, the return value will include cookies marked
+ * "HttpOnly" (that is, cookies that the server wishes to keep hidden
+ * from client-side scripting operations such as the JavaScript
+ * document.cookies property). Since #SoupCookieJar sets the Cookie
+ * header itself when making the actual HTTP request, you should
+ * almost certainly be setting @for_http to %FALSE if you are calling
+ * this.
+ *
+ * Return value: the cookies, in string form, or %NULL if there are no
+ * cookies for @uri.
+ *
+ * Since: 2.24
+ **/
+char *
+soup_cookie_jar_get_cookies (SoupCookieJar *jar, SoupURI *uri,
+			     gboolean for_http)
+{
+	GSList *cookies;
+
+	g_return_val_if_fail (SOUP_IS_COOKIE_JAR (jar), NULL);
+	g_return_val_if_fail (uri != NULL, NULL);
+
+	cookies = get_cookies (jar, uri, for_http, FALSE);
+
 	if (cookies) {
-		cookies = g_slist_sort_with_data (cookies, compare_cookies, jar);
-		result = soup_cookies_to_cookie_header (cookies);
+		char *result = soup_cookies_to_cookie_header (cookies);
 		g_slist_free (cookies);
 
 		if (!*result) {
@@ -419,9 +402,41 @@ soup_cookie_jar_get_cookies (SoupCookieJar *jar, SoupURI *uri,
 }
 
 /**
+ * soup_cookie_jar_get_cookie_list:
+ * @jar: a #SoupCookieJar
+ * @uri: a #SoupURI
+ * @for_http: whether or not the return value is being passed directly
+ * to an HTTP operation
+ *
+ * Retrieves the list of cookies that would be sent with a request to @uri
+ * as a #GSList of #SoupCookie objects.
+ *
+ * If @for_http is %TRUE, the return value will include cookies marked
+ * "HttpOnly" (that is, cookies that the server wishes to keep hidden
+ * from client-side scripting operations such as the JavaScript
+ * document.cookies property). Since #SoupCookieJar sets the Cookie
+ * header itself when making the actual HTTP request, you should
+ * almost certainly be setting @for_http to %FALSE if you are calling
+ * this.
+ *
+ * Return value: (transfer full) (element-type Soup.Cookie): a #GSList
+ * with the cookies in the @jar that would be sent with a request to @uri.
+ *
+ * Since: 2.40
+ **/
+GSList *
+soup_cookie_jar_get_cookie_list (SoupCookieJar *jar, SoupURI *uri, gboolean for_http)
+{
+	g_return_val_if_fail (SOUP_IS_COOKIE_JAR (jar), NULL);
+	g_return_val_if_fail (uri != NULL, NULL);
+
+	return get_cookies (jar, uri, for_http, TRUE);
+}
+
+/**
  * soup_cookie_jar_add_cookie:
  * @jar: a #SoupCookieJar
- * @cookie: a #SoupCookie
+ * @cookie: (transfer full): a #SoupCookie
  *
  * Adds @cookie to @jar, emitting the 'changed' signal if we are modifying
  * an existing cookie or adding a valid new cookie ('valid' means
@@ -440,6 +455,13 @@ soup_cookie_jar_add_cookie (SoupCookieJar *jar, SoupCookie *cookie)
 
 	g_return_if_fail (SOUP_IS_COOKIE_JAR (jar));
 	g_return_if_fail (cookie != NULL);
+
+	/* Never accept cookies for public domains. */
+	if (!g_hostname_is_ip_address (cookie->domain) &&
+	    soup_tld_domain_is_public_suffix (cookie->domain)) {
+		soup_cookie_free (cookie);
+		return;
+	}
 
 	priv = SOUP_COOKIE_JAR_GET_PRIVATE (jar);
 	old_cookies = g_hash_table_lookup (priv->domains, cookie->domain);
@@ -486,6 +508,47 @@ soup_cookie_jar_add_cookie (SoupCookieJar *jar, SoupCookie *cookie)
 	}
 
 	soup_cookie_jar_changed (jar, NULL, cookie);
+}
+
+/**
+ * soup_cookie_jar_add_cookie_with_first_party:
+ * @jar: a #SoupCookieJar
+ * @first_party: the URI for the main document
+ * @cookie: (transfer full): a #SoupCookie
+ *
+ * Adds @cookie to @jar, emitting the 'changed' signal if we are modifying
+ * an existing cookie or adding a valid new cookie ('valid' means
+ * that the cookie's expire date is not in the past).
+ *
+ * @first_party will be used to reject cookies coming from third party
+ * resources in case such a security policy is set in the @jar.
+ *
+ * @cookie will be 'stolen' by the jar, so don't free it afterwards.
+ *
+ * Since: 2.40
+ **/
+void
+soup_cookie_jar_add_cookie_with_first_party (SoupCookieJar *jar, SoupURI *first_party, SoupCookie *cookie)
+{
+	SoupCookieJarPrivate *priv;
+
+	g_return_if_fail (SOUP_IS_COOKIE_JAR (jar));
+	g_return_if_fail (first_party != NULL);
+	g_return_if_fail (cookie != NULL);
+
+	priv = SOUP_COOKIE_JAR_GET_PRIVATE (jar);
+	if (priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_NEVER) {
+		soup_cookie_free (cookie);
+		return;
+	}
+
+	if (priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_ALWAYS ||
+	    soup_cookie_domain_matches (cookie, first_party->host)) {
+		/* will steal or free soup_cookie */
+		soup_cookie_jar_add_cookie (jar, cookie);
+	} else {
+		soup_cookie_free (cookie);
+	}
 }
 
 /**
@@ -553,7 +616,6 @@ soup_cookie_jar_set_cookie_with_first_party (SoupCookieJar *jar,
 					     const char *cookie)
 {
 	SoupCookie *soup_cookie;
-	SoupCookieJarPrivate *priv;
 
 	g_return_if_fail (SOUP_IS_COOKIE_JAR (jar));
 	g_return_if_fail (uri != NULL);
@@ -563,21 +625,9 @@ soup_cookie_jar_set_cookie_with_first_party (SoupCookieJar *jar,
 	if (!uri->host)
 		return;
 
-	priv = SOUP_COOKIE_JAR_GET_PRIVATE (jar);
-	if (priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_NEVER)
-		return;
-
 	soup_cookie = soup_cookie_parse (cookie, uri);
-	if (soup_cookie) {
-		if (priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_ALWAYS ||
-		    soup_cookie_domain_matches (soup_cookie, first_party->host)) {
-
-			/* will steal or free soup_cookie */
-			soup_cookie_jar_add_cookie (jar, soup_cookie);
-		} else {
-			soup_cookie_free (soup_cookie);
-		}
-	}
+	if (soup_cookie)
+		soup_cookie_jar_add_cookie_with_first_party (jar, first_party, soup_cookie);
 }
 
 static void
@@ -587,13 +637,17 @@ process_set_cookie_header (SoupMessage *msg, gpointer user_data)
 	SoupCookieJarPrivate *priv = SOUP_COOKIE_JAR_GET_PRIVATE (jar);
 	GSList *new_cookies, *nc;
 
+	if (!priv) {
+		TIZEN_LOGI("error SoupCookieJar is null");
+		return;
+	}
 	if (priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_NEVER)
 		return;
 
 	new_cookies = soup_cookies_from_response (msg);
 	for (nc = new_cookies; nc; nc = nc->next) {
 		SoupURI *first_party = soup_message_get_first_party (msg);
-
+		
 		if ((priv->accept_policy == SOUP_COOKIE_JAR_ACCEPT_NO_THIRD_PARTY &&
 		     first_party != NULL && first_party->host &&
 		     soup_cookie_domain_matches (nc->data, first_party->host)) ||
@@ -606,8 +660,9 @@ process_set_cookie_header (SoupMessage *msg, gpointer user_data)
 }
 
 static void
-request_queued (SoupSessionFeature *feature, SoupSession *session,
-		SoupMessage *msg)
+soup_cookie_jar_request_queued (SoupSessionFeature *feature,
+				SoupSession *session,
+				SoupMessage *msg)
 {
 	soup_message_add_header_handler (msg, "got-headers",
 					 "Set-Cookie",
@@ -616,8 +671,10 @@ request_queued (SoupSessionFeature *feature, SoupSession *session,
 }
 
 static void
-request_started (SoupSessionFeature *feature, SoupSession *session,
-		 SoupMessage *msg, SoupSocket *socket)
+soup_cookie_jar_request_started (SoupSessionFeature *feature,
+				 SoupSession *session,
+				 SoupMessage *msg,
+				 SoupSocket *socket)
 {
 	SoupCookieJar *jar = SOUP_COOKIE_JAR (feature);
 	char *cookies;
@@ -632,10 +689,20 @@ request_started (SoupSessionFeature *feature, SoupSession *session,
 }
 
 static void
-request_unqueued (SoupSessionFeature *feature, SoupSession *session,
-		  SoupMessage *msg)
+soup_cookie_jar_request_unqueued (SoupSessionFeature *feature,
+				  SoupSession *session,
+				  SoupMessage *msg)
 {
 	g_signal_handlers_disconnect_by_func (msg, process_set_cookie_header, feature);
+}
+
+static void
+soup_cookie_jar_session_feature_init (SoupSessionFeatureInterface *feature_interface,
+				      gpointer interface_data)
+{
+	feature_interface->request_queued = soup_cookie_jar_request_queued;
+	feature_interface->request_started = soup_cookie_jar_request_started;
+	feature_interface->request_unqueued = soup_cookie_jar_request_unqueued;
 }
 
 /**
@@ -732,6 +799,9 @@ soup_cookie_jar_delete_cookie (SoupCookieJar *jar,
  * document. If no first party is set in a message when this policy is
  * in effect, cookies will be assumed to be third party by default.
  *
+ * The policy for accepting or rejecting cookies returned in
+ * responses.
+ *
  * Since: 2.30
  */
 
@@ -760,7 +830,7 @@ soup_cookie_jar_get_accept_policy (SoupCookieJar *jar)
  * soup_cookie_jar_set_accept_policy:
  * @jar: a #SoupCookieJar
  * @policy: a #SoupCookieJarAcceptPolicy
- *
+ * 
  * Sets @policy as the cookie acceptance policy for @jar.
  *
  * Since: 2.30

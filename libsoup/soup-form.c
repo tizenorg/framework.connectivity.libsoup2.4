@@ -12,8 +12,8 @@
 #include <string.h>
 
 #include "soup-form.h"
-#include "soup-message.h"
-#include "soup-uri.h"
+#include "soup.h"
+#include "TIZEN.h"
 
 /**
  * SECTION:soup-form
@@ -219,7 +219,8 @@ append_form_encoded (GString *str, const char *in)
 		if (*s == ' ') {
 			g_string_append_c (str, '+');
 			s++;
-		} else if (!g_ascii_isalnum (*s))
+		} else if (!g_ascii_isalnum (*s) && (*s != '-') && (*s != '_')
+			   && (*s != '.'))
 			g_string_append_printf (str, "%%%02X", (int)*s++);
 		else
 			g_string_append_c (str, *s++);
@@ -237,12 +238,6 @@ encode_pair (GString *str, const char *name, const char *value)
 	append_form_encoded (str, name);
 	g_string_append_c (str, '=');
 	append_form_encoded (str, value);
-}
-
-static void
-hash_encode_foreach (gpointer name, gpointer value, gpointer str)
-{
-	encode_pair (str, name, value);
 }
 
 /**
@@ -295,8 +290,12 @@ char *
 soup_form_encode_hash (GHashTable *form_data_set)
 {
 	GString *str = g_string_new (NULL);
+	GHashTableIter iter;
+	gpointer name, value;
 
-	g_hash_table_foreach (form_data_set, hash_encode_foreach, str);
+	g_hash_table_iter_init (&iter, form_data_set);
+	while (g_hash_table_iter_next (&iter, &name, &value))
+		encode_pair (str, name, value);
 	return g_string_free (str, FALSE);
 }
 
@@ -487,7 +486,11 @@ soup_form_request_new_from_multipart (const char *uri,
 	SoupMessage *msg;
 
 	msg = soup_message_new ("POST", uri);
-	soup_multipart_to_message (multipart, msg->request_headers,
+#if ENABLE(TIZEN_EXT)
+	if (msg)
+#endif
+		soup_multipart_to_message (multipart, msg->request_headers,
 				   msg->request_body);
+
 	return msg;
 }

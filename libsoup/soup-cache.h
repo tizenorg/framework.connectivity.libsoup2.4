@@ -23,8 +23,6 @@
 #ifndef SOUP_CACHE_H
 #define SOUP_CACHE_H 1
 
-#ifdef LIBSOUP_USE_UNSTABLE_REQUEST_API
-
 #include <libsoup/soup-types.h>
 #include <gio/gio.h>
 
@@ -50,10 +48,7 @@ typedef enum {
 typedef enum {
 	SOUP_CACHE_RESPONSE_FRESH,
 	SOUP_CACHE_RESPONSE_NEEDS_VALIDATION,
-	SOUP_CACHE_RESPONSE_STALE,
-/* #if ENABLE(TIZEN_TURBO) */
-	SOUP_CACHE_RESPONSE_SPDY_PUSH_ENTRY
-/* #endif */
+	SOUP_CACHE_RESPONSE_STALE
 } SoupCacheResponse;
 
 typedef enum {
@@ -80,26 +75,33 @@ typedef struct {
 	void (*_libsoup_reserved3)(void);
 } SoupCacheClass;
 
+SOUP_AVAILABLE_IN_2_34
 GType      soup_cache_get_type     (void);
+SOUP_AVAILABLE_IN_2_34
 SoupCache *soup_cache_new          (const char    *cache_dir,
 				    SoupCacheType  cache_type);
+SOUP_AVAILABLE_IN_2_34
 void       soup_cache_flush        (SoupCache     *cache);
+SOUP_AVAILABLE_IN_2_34
 void       soup_cache_clear        (SoupCache     *cache);
 
+SOUP_AVAILABLE_IN_2_34
 void       soup_cache_dump         (SoupCache     *cache);
+SOUP_AVAILABLE_IN_2_34
 void       soup_cache_load         (SoupCache     *cache);
 
+SOUP_AVAILABLE_IN_2_34
 void       soup_cache_set_max_size (SoupCache     *cache,
 				    guint          max_size);
+SOUP_AVAILABLE_IN_2_34
 guint      soup_cache_get_max_size (SoupCache     *cache);
 
-/* #if ENABLE (TIZEN_CACHE_ENTRY_VALIDATED_SET) */
-void       soup_cache_entry_validated_set (SoupCache *cache, SoupMessage *msg);
-/* #endif */
-
+//#if ENABLE (TIZEN_UPDATE_CACHE_ENTRY_CONTENT_TYPE_HEADER)
+void       soup_cache_entry_set_content_type (SoupSession     *session,
+                                              SoupMessage     *msg,
+                                              const char      *content_type);
+//#endif
 G_END_DECLS
-
-#endif /* LIBSOUP_USE_UNSTABLE_REQUEST_API */
 
 #endif /* SOUP_CACHE_H */
 

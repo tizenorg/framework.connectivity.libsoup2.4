@@ -9,25 +9,42 @@
 #include <config.h>
 #endif
 
-#include <stdio.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
 #include <string.h>
-#include <unistd.h>
 
-#include "soup-address.h"
+#include <gio/gnetworking.h>
+
 #include "soup-socket.h"
-#include "soup-marshal.h"
-#include "soup-misc.h"
+#include "soup.h"
+#include "soup-filter-input-stream.h"
+#include "soup-io-stream.h"
 #include "soup-misc-private.h"
-/*TIZEN patch*/
 #include "TIZEN.h"
 
-#if ENABLE_TIZEN_SPDY
-#include <spindly/spindly.h>
+#if ENABLE(TIZEN_PERFORMANCE_TEST_LOG)
+#include <sys/prctl.h>
+#ifndef PR_TASK_PERF_USER_TRACE
+#define PR_TASK_PERF_USER_TRACE 666
+#endif
+#define HWCLOCK_LOG(s)	{const char *str=s; prctl(PR_TASK_PERF_USER_TRACE, str, strlen(str));}
+static void prctl_with_url(const char *prestr, const char *url)
+{
+	char s[256];
+	int lem_max = 120;
+	int len_pre = strlen(prestr);
+	int len_url = strlen(url);
 
-#define __STR_GTLS_SET_NPN		"\x06spdy/3\x06spdy/2\x08http/1.1"
+	strcpy(s, prestr);
+	if(len_pre + len_url < lem_max) {
+		strcpy(s+len_pre, url);
+	}
+	else {
+		int len_part = lem_max - len_pre - 10;
+		strncpy(s+len_pre, url, len_part );
+		strcpy(s+len_pre+len_part, "...");
+		strcpy(s+len_pre+len_part+3, url+len_url-7);
+	}
+	prctl(PR_TASK_PERF_USER_TRACE, s, strlen(s));
+}
 #endif
 
 /**
@@ -48,6 +65,13 @@ enum {
 	DISCONNECTED,
 	NEW_CONNECTION,
 	EVENT,
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+        DYNAMIC_CERTIFICATEPATH,
+#endif
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	ACCEPT_CERTIFICATE,
+#endif
+
 	LAST_SIGNAL
 };
 
@@ -70,22 +94,22 @@ enum {
 	PROP_CLEAN_DISPOSE,
 	PROP_TLS_CERTIFICATE,
 	PROP_TLS_ERRORS,
-#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-        PROP_TIMEDOUT_ERROR,
+	PROP_PROXY_RESOLVER,
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	PROP_WIDGET_ENGINE,
 #endif
-#if ENABLE_TIZEN_SPDY
-	PROP_ALLOW_SPDY,
-#endif
+
 	LAST_PROP
 };
 
 typedef struct {
 	SoupAddress *local_addr, *remote_addr;
-	GIOStream *conn;
+	GIOStream *conn, *iostream;
 	GSocket *gsock;
-	GPollableInputStream *istream;
-	GPollableOutputStream *ostream;
+	GInputStream *istream;
+	GOutputStream *ostream;
 	GTlsCertificateFlags tls_errors;
+	GProxyResolver *proxy_resolver;
 
 	guint non_blocking:1;
 	guint is_server:1;
@@ -99,51 +123,29 @@ typedef struct {
 	GMainContext   *async_context;
 	GSource        *watch_src;
 	GSource        *read_src, *write_src;
-	GByteArray     *read_buf;
 
 	GMutex iolock, addrlock;
 	guint timeout;
-#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-	gboolean timedout_error;
-#endif
 
 	GCancellable *connect_cancel;
-
-#if ENABLE_TIZEN_SPDY
-	gboolean is_spdy_allowed;
-	SoupSocketNPNType npn_type;
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	gboolean widget_engine;
+	gchar **cert_lists;
+#endif
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	gboolean acceptedCertificate;
 #endif
 } SoupSocketPrivate;
-#define SOUP_SOCKET_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SOCKET, SoupSocketPrivate))
 
-static void set_property (GObject *object, guint prop_id,
-			  const GValue *value, GParamSpec *pspec);
-static void get_property (GObject *object, guint prop_id,
-			  GValue *value, GParamSpec *pspec);
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#define CERT_LIST_FILE "/usr/share/clientcert/ClientCertList"
+#endif
+
+#define SOUP_SOCKET_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SOCKET, SoupSocketPrivate))
 
 static void soup_socket_peer_certificate_changed (GObject *conn,
 						  GParamSpec *pspec,
 						  gpointer user_data);
-
-#if ENABLE_TIZEN_SPDY
-static SoupSocketNPNType
-convert_to_npn_type (const gchar *npn)
-{
-	if (!npn)
-		return SOUP_SOCKET_NPN_DEFAULT;
-
-	if (!g_strcmp0(npn, "http/1.1"))
-		return SOUP_SOCKET_NPN_HTTP1_1;
-
-	if (!g_strcmp0(npn, "spdy/2"))
-		return SOUP_SOCKET_NPN_SPDY2;
-
-	if (!g_strcmp0(npn, "spdy/3"))
-		return SOUP_SOCKET_NPN_SPDY3;
-
-	return SOUP_SOCKET_NPN_DEFAULT;
-}
-#endif
 
 static void
 soup_socket_init (SoupSocket *sock)
@@ -151,6 +153,12 @@ soup_socket_init (SoupSocket *sock)
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
 	priv->non_blocking = TRUE;
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	priv->cert_lists = NULL;
+#endif
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	priv->acceptedCertificate = FALSE;
+#endif
 	g_mutex_init (&priv->addrlock);
 	g_mutex_init (&priv->iolock);
 }
@@ -160,20 +168,9 @@ disconnect_internal (SoupSocket *sock, gboolean close)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
-	if (priv->gsock) {
-		if (close)
-			g_socket_close (priv->gsock, NULL);
-		g_object_unref (priv->gsock);
-		priv->gsock = NULL;
-	}
-	if (priv->conn) {
-		if (G_IS_TLS_CONNECTION (priv->conn))
-			g_signal_handlers_disconnect_by_func (priv->conn, soup_socket_peer_certificate_changed, sock);
-		g_object_unref (priv->conn);
-		priv->conn = NULL;
-		priv->istream = NULL;
-		priv->ostream = NULL;
-	}
+	g_clear_object (&priv->gsock);
+	if (priv->conn && close)
+		g_io_stream_close (priv->conn, NULL, NULL);
 
 	if (priv->read_src) {
 		g_source_destroy (priv->read_src);
@@ -186,41 +183,185 @@ disconnect_internal (SoupSocket *sock, gboolean close)
 }
 
 static void
-finalize (GObject *object)
+soup_socket_finalize (GObject *object)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (object);
+
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	if (priv->cert_lists)
+		g_strfreev (priv->cert_lists);
+#endif
 
 	if (priv->connect_cancel) {
 		if (priv->clean_dispose)
 			g_warning ("Disposing socket %p during connect", object);
 		g_object_unref (priv->connect_cancel);
 	}
-	if (priv->conn) {
+	if (priv->gsock) {
 		if (priv->clean_dispose)
 			g_warning ("Disposing socket %p while still connected", object);
 		disconnect_internal (SOUP_SOCKET (object), TRUE);
 	}
 
-	if (priv->local_addr)
-		g_object_unref (priv->local_addr);
-	if (priv->remote_addr)
-		g_object_unref (priv->remote_addr);
+	g_clear_object (&priv->conn);
+	g_clear_object (&priv->iostream);
+	g_clear_object (&priv->istream);
+	g_clear_object (&priv->ostream);
+
+	g_clear_object (&priv->local_addr);
+	g_clear_object (&priv->remote_addr);
+
+	g_clear_object (&priv->proxy_resolver);
 
 	if (priv->watch_src) {
 		if (priv->clean_dispose && !priv->is_server)
 			g_warning ("Disposing socket %p during async op", object);
 		g_source_destroy (priv->watch_src);
 	}
-	if (priv->async_context)
-		g_main_context_unref (priv->async_context);
-
-	if (priv->read_buf)
-		g_byte_array_free (priv->read_buf, TRUE);
+	g_clear_pointer (&priv->async_context, g_main_context_unref);
 
 	g_mutex_clear (&priv->addrlock);
 	g_mutex_clear (&priv->iolock);
 
 	G_OBJECT_CLASS (soup_socket_parent_class)->finalize (object);
+}
+
+
+static void
+finish_socket_setup (SoupSocketPrivate *priv)
+{
+	if (!priv->gsock)
+		return;
+
+	if (!priv->conn)
+		priv->conn = (GIOStream *)g_socket_connection_factory_create_connection (priv->gsock);
+	if (!priv->iostream)
+		priv->iostream = soup_io_stream_new (priv->conn, FALSE);
+	if (!priv->istream)
+		priv->istream = g_object_ref (g_io_stream_get_input_stream (priv->iostream));
+	if (!priv->ostream)
+		priv->ostream = g_object_ref (g_io_stream_get_output_stream (priv->iostream));
+
+	g_socket_set_timeout (priv->gsock, priv->timeout);
+	g_socket_set_option (priv->gsock, IPPROTO_TCP, TCP_NODELAY, TRUE, NULL);
+}
+
+static void
+soup_socket_set_property (GObject *object, guint prop_id,
+			  const GValue *value, GParamSpec *pspec)
+{
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_LOCAL_ADDRESS:
+		priv->local_addr = (SoupAddress *)g_value_dup_object (value);
+		break;
+	case PROP_REMOTE_ADDRESS:
+		priv->remote_addr = (SoupAddress *)g_value_dup_object (value);
+		break;
+	case PROP_NON_BLOCKING:
+		priv->non_blocking = g_value_get_boolean (value);
+		break;
+	case PROP_SSL_CREDENTIALS:
+		priv->ssl_creds = g_value_get_pointer (value);
+		break;
+	case PROP_SSL_STRICT:
+		priv->ssl_strict = g_value_get_boolean (value);
+		break;
+	case PROP_SSL_FALLBACK:
+		priv->ssl_fallback = g_value_get_boolean (value);
+		break;
+	case PROP_ASYNC_CONTEXT:
+		priv->async_context = g_value_get_pointer (value);
+		if (priv->async_context)
+			g_main_context_ref (priv->async_context);
+		break;
+	case PROP_USE_THREAD_CONTEXT:
+		priv->use_thread_context = g_value_get_boolean (value);
+		break;
+	case PROP_TIMEOUT:
+		priv->timeout = g_value_get_uint (value);
+		if (priv->conn)
+			g_socket_set_timeout (priv->gsock, priv->timeout);
+		break;
+	case PROP_PROXY_RESOLVER:
+		priv->proxy_resolver = g_value_dup_object (value);
+		break;
+	case PROP_CLEAN_DISPOSE:
+		priv->clean_dispose = g_value_get_boolean (value);
+		break;
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	case PROP_WIDGET_ENGINE:
+		priv->widget_engine = g_value_get_boolean (value);
+		break;
+#endif
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static void
+soup_socket_get_property (GObject *object, guint prop_id,
+			  GValue *value, GParamSpec *pspec)
+{
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_LOCAL_ADDRESS:
+		g_value_set_object (value, soup_socket_get_local_address (SOUP_SOCKET (object)));
+		break;
+	case PROP_REMOTE_ADDRESS:
+		g_value_set_object (value, soup_socket_get_remote_address (SOUP_SOCKET (object)));
+		break;
+	case PROP_NON_BLOCKING:
+		g_value_set_boolean (value, priv->non_blocking);
+		break;
+	case PROP_IS_SERVER:
+		g_value_set_boolean (value, priv->is_server);
+		break;
+	case PROP_SSL_CREDENTIALS:
+		g_value_set_pointer (value, priv->ssl_creds);
+		break;
+	case PROP_SSL_STRICT:
+		g_value_set_boolean (value, priv->ssl_strict);
+		break;
+	case PROP_SSL_FALLBACK:
+		g_value_set_boolean (value, priv->ssl_fallback);
+		break;
+	case PROP_TRUSTED_CERTIFICATE:
+		g_value_set_boolean (value, priv->tls_errors == 0);
+		break;
+	case PROP_ASYNC_CONTEXT:
+		g_value_set_pointer (value, priv->async_context ? g_main_context_ref (priv->async_context) : NULL);
+		break;
+	case PROP_USE_THREAD_CONTEXT:
+		g_value_set_boolean (value, priv->use_thread_context);
+		break;
+	case PROP_TIMEOUT:
+		g_value_set_uint (value, priv->timeout);
+		break;
+	case PROP_TLS_CERTIFICATE:
+		if (G_IS_TLS_CONNECTION (priv->conn))
+			g_value_set_object (value, g_tls_connection_get_peer_certificate (G_TLS_CONNECTION (priv->conn)));
+		else
+			g_value_set_object (value, NULL);
+		break;
+	case PROP_TLS_ERRORS:
+		g_value_set_flags (value, priv->tls_errors);
+		break;
+	case PROP_PROXY_RESOLVER:
+		g_value_set_object (value, priv->proxy_resolver);
+		break;
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	case PROP_WIDGET_ENGINE:
+		g_value_set_boolean (value, priv->widget_engine);
+		break;
+#endif
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
 }
 
 static void
@@ -231,9 +372,9 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 	g_type_class_add_private (socket_class, sizeof (SoupSocketPrivate));
 
 	/* virtual method override */
-	object_class->finalize = finalize;
-	object_class->set_property = set_property;
-	object_class->get_property = get_property;
+	object_class->finalize = soup_socket_finalize;
+	object_class->set_property = soup_socket_set_property;
+	object_class->get_property = soup_socket_get_property;
 
 	/* signals */
 
@@ -251,7 +392,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (SoupSocketClass, readable),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -267,7 +408,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (SoupSocketClass, writable),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -283,7 +424,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (SoupSocketClass, disconnected),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
 
 	/**
@@ -303,7 +444,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupSocketClass, new_connection),
 			      NULL, NULL,
-			      _soup_marshal_NONE__OBJECT,
+			      NULL,
 			      G_TYPE_NONE, 1,
 			      SOUP_TYPE_SOCKET);
 	/**
@@ -328,6 +469,29 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 			      G_TYPE_SOCKET_CLIENT_EVENT,
 			      G_TYPE_IO_STREAM);
 
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+	signals[DYNAMIC_CERTIFICATEPATH] =
+		g_signal_new ("dynamic-certificatePath",
+			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_SIGNAL_RUN_LAST,
+			      0,
+			      NULL, NULL,
+			      NULL,
+			      G_TYPE_POINTER, 1,
+			      G_TYPE_POINTER);
+#endif
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	signals[ACCEPT_CERTIFICATE] =
+		g_signal_new ("accept-certificate",
+			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_SIGNAL_RUN_LAST,
+			      0,
+			      NULL, NULL,
+			      NULL,
+			      G_TYPE_BOOLEAN, 2,
+			      G_TYPE_TLS_CERTIFICATE,
+			      G_TYPE_TLS_CERTIFICATE_FLAGS);
+#endif
 
 	/* properties */
 	/**
@@ -478,14 +642,14 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 	 * Alias for the #SoupSocket:use-thread-context property. (Use
 	 * g_main_context_get_thread_default())
 	 *
-	 * Since: 2.36.1
+	 * Since: 2.38
 	 */
 	/**
 	 * SoupSocket:use-thread-context:
 	 *
 	 * Use g_main_context_get_thread_default().
 	 *
-	 * Since: 2.36.1
+	 * Since: 2.38
 	 */
 	g_object_class_install_property (
 		object_class, PROP_USE_THREAD_CONTEXT,
@@ -550,171 +714,127 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 				    "Errors with the peer's TLS certificate",
 				    G_TYPE_TLS_CERTIFICATE_FLAGS, 0,
 				    G_PARAM_READABLE));
-#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
+
+	g_object_class_install_property (
+		object_class, PROP_PROXY_RESOLVER,
+		g_param_spec_object (SOUP_SOCKET_PROXY_RESOLVER,
+				     "Proxy resolver",
+				     "GProxyResolver to use",
+				     G_TYPE_PROXY_RESOLVER,
+				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
 	/**
-	 * SOUP_SOCKET_TIMEDOUT_ERROR:
+	 * SOUP_SOCKET_WIDGET_ENGINE:
 	 *
-	 * Alias for the #SoupSocket:timeout_error property. Set based on
-	 * the error is timed out error or not
+	 * Alias for the #SoupSocket:widget-engine property.
 	 **/
-	 g_object_class_install_property (
-		object_class, PROP_TIMEDOUT_ERROR,
-		g_param_spec_boolean (SOUP_SOCKET_TIMEDOUT_ERROR,
-				      "Timed out",
-				      "Socket timed out",
+	g_object_class_install_property (
+		object_class, PROP_WIDGET_ENGINE,
+		g_param_spec_boolean (SOUP_SOCKET_WIDGET_ENGINE,
+				      "widget engine",
+				      "Whether or not to be running Widget Engine",
 				      FALSE,
 				      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 #endif
-#if ENABLE_TIZEN_SPDY
-	g_object_class_install_property (
-		object_class, PROP_ALLOW_SPDY,
-		g_param_spec_boolean (SOUP_SOCKET_ALLOW_SPDY,
-					"flag to decide to allow spdy or not",
-					"Set TRUE if want to use spdy feature",
-					FALSE,
-					  G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
-#endif
 }
 
-
-static void
-finish_socket_setup (SoupSocketPrivate *priv)
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+static GTlsCertificate *
+soup_get_client_certificate(SoupSocket *sock, const char* ssl_host)
 {
-	if (!priv->gsock)
-		return;
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
+	GTlsCertificate* cert = NULL;
+	GError* pGError = NULL;
+	gsize cert_list_len;
+	gchar* cert_file = NULL;
+	gchar* key_file = NULL;
+	int i;
 
-	if (!priv->conn)
-		priv->conn = (GIOStream *)g_socket_connection_factory_create_connection (priv->gsock);
-	if (!priv->istream)
-		priv->istream = G_POLLABLE_INPUT_STREAM (g_io_stream_get_input_stream (priv->conn));
-	if (!priv->ostream)
-		priv->ostream = G_POLLABLE_OUTPUT_STREAM (g_io_stream_get_output_stream (priv->conn));
+	if (!ssl_host || !ssl_host[0] || !priv)
+		return NULL;
+	if (!priv->cert_lists) {
+		gchar *cert_list_file = NULL;
+		if (!g_file_get_contents (CERT_LIST_FILE, &cert_list_file, &cert_list_len, &pGError) || pGError) {
+			g_warning ("Could not get certificate list of [%s] : %s", CERT_LIST_FILE, pGError->message);
+			g_error_free (pGError);
+			return NULL;
+		}
 
-	g_socket_set_timeout (priv->gsock, priv->timeout);
-}
-
-static void
-set_property (GObject *object, guint prop_id,
-	      const GValue *value, GParamSpec *pspec)
-{
-	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (object);
-
-	switch (prop_id) {
-	case PROP_LOCAL_ADDRESS:
-		priv->local_addr = (SoupAddress *)g_value_dup_object (value);
-		break;
-	case PROP_REMOTE_ADDRESS:
-		priv->remote_addr = (SoupAddress *)g_value_dup_object (value);
-		break;
-	case PROP_NON_BLOCKING:
-		priv->non_blocking = g_value_get_boolean (value);
-		break;
-	case PROP_SSL_CREDENTIALS:
-		priv->ssl_creds = g_value_get_pointer (value);
-		break;
-	case PROP_SSL_STRICT:
-		priv->ssl_strict = g_value_get_boolean (value);
-		break;
-	case PROP_SSL_FALLBACK:
-		priv->ssl_fallback = g_value_get_boolean (value);
-		break;
-	case PROP_ASYNC_CONTEXT:
-		priv->async_context = g_value_get_pointer (value);
-		if (priv->async_context)
-			g_main_context_ref (priv->async_context);
-		break;
-	case PROP_USE_THREAD_CONTEXT:
-		priv->use_thread_context = g_value_get_boolean (value);
-		break;
-	case PROP_TIMEOUT:
-		priv->timeout = g_value_get_uint (value);
-		if (priv->conn)
-			g_socket_set_timeout (priv->gsock, priv->timeout);
-		break;
-	case PROP_CLEAN_DISPOSE:
-		priv->clean_dispose = g_value_get_boolean (value);
-		break;
-#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-	case PROP_TIMEDOUT_ERROR:
-		priv->timedout_error = g_value_get_boolean (value);
-		break;
-#endif
-#if ENABLE_TIZEN_SPDY
-	case PROP_ALLOW_SPDY:
-		priv->is_spdy_allowed = g_value_get_boolean (value);
-		break;
-#endif
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
+		if (!cert_list_file)
+			return NULL;
+		/* keep certficate list's infomation */
+		priv->cert_lists = g_strsplit (cert_list_file, ",", 0);
+		g_free (cert_list_file);
 	}
-}
 
-static void
-get_property (GObject *object, guint prop_id,
-	      GValue *value, GParamSpec *pspec)
-{
-	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (object);
+	for (i = 0; priv->cert_lists[i]; i++) {
+		gchar **path = g_strsplit (priv->cert_lists[i], ":", 0);
 
-	switch (prop_id) {
-	case PROP_LOCAL_ADDRESS:
-		g_value_set_object (value, soup_socket_get_local_address (SOUP_SOCKET (object)));
-		break;
-	case PROP_REMOTE_ADDRESS:
-		g_value_set_object (value, soup_socket_get_remote_address (SOUP_SOCKET (object)));
-		break;
-	case PROP_NON_BLOCKING:
-		g_value_set_boolean (value, priv->non_blocking);
-		break;
-	case PROP_IS_SERVER:
-		g_value_set_boolean (value, priv->is_server);
-		break;
-	case PROP_SSL_CREDENTIALS:
-		g_value_set_pointer (value, priv->ssl_creds);
-		break;
-	case PROP_SSL_STRICT:
-		g_value_set_boolean (value, priv->ssl_strict);
-		break;
-	case PROP_SSL_FALLBACK:
-		g_value_set_boolean (value, priv->ssl_fallback);
-		break;
-	case PROP_TRUSTED_CERTIFICATE:
-		g_value_set_boolean (value, priv->tls_errors == 0);
-		break;
-	case PROP_ASYNC_CONTEXT:
-		g_value_set_pointer (value, priv->async_context ? g_main_context_ref (priv->async_context) : NULL);
-		break;
-	case PROP_USE_THREAD_CONTEXT:
-		g_value_set_boolean (value, priv->use_thread_context);
-		break;
-	case PROP_TIMEOUT:
-		g_value_set_uint (value, priv->timeout);
-		break;
-	case PROP_TLS_CERTIFICATE:
-		if (G_IS_TLS_CONNECTION (priv->conn))
-			g_value_set_object (value, g_tls_connection_get_peer_certificate (G_TLS_CONNECTION (priv->conn)));
-		else
-			g_value_set_object (value, NULL);
-		break;
-	case PROP_TLS_ERRORS:
-		g_value_set_flags (value, priv->tls_errors);
-		break;
-#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-	case PROP_TIMEDOUT_ERROR:
-		g_value_set_boolean (value, priv->timedout_error);
-		break;
-#endif
-#if ENABLE_TIZEN_SPDY
-	case PROP_ALLOW_SPDY:
-		g_value_set_boolean (value, priv->is_spdy_allowed);
-		break;
-#endif
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
+		/* verify format (url:certpath:keypath) */
+		if (path[0] && path[1] && path[2]) {
+			/* remove white space */
+			g_strstrip(path[0]);
+			g_strstrip(path[1]);
+			g_strstrip(path[2]);
+			/* compare url pattern */
+			if (strstr (ssl_host, path[0])) {
+				cert_file = g_strdup (path[1]);
+				key_file =g_strdup (path[2]);
+				g_strfreev (path);
+				break;
+			}
+		}
+		g_strfreev (path);
 	}
-}
 
+	if (!cert_file || !key_file)
+		return NULL;
+	if (access (cert_file, 4) == 0 && access (key_file, 4) == 0) {
+		cert = g_tls_certificate_new_from_files (cert_file, key_file, &pGError);
+		if (!cert) {
+			if (pGError) {
+				g_warning ("Could not read SSL certificate from : %s", pGError->message);
+				g_error_free (pGError);
+			}
+		}
+	} else
+		g_warning ("Could not acess cert=%s, key=%s\n", cert_file, key_file);
+
+	g_free (cert_file);
+	g_free (key_file);
+	return cert;
+}
+#endif
+
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+static GTlsCertificate *soup_get_dynamic_client_certificate(SoupSocket *sock, const char* ssl_host)
+{
+	SoupSocket *soupSock = sock;
+	GTlsCertificate* dynamic_cert = NULL;
+	GError* pGError = NULL;
+	const char* get_certpath = NULL;
+
+	g_signal_emit (sock, signals[DYNAMIC_CERTIFICATEPATH], 0, ssl_host, &get_certpath);
+	TIZEN_LOGI("Get Certpath[%s] \n", get_certpath);
+
+	if (!get_certpath)
+		return NULL;
+
+	if (access (get_certpath, 4) == 0) {
+		dynamic_cert = g_tls_certificate_new_from_files (get_certpath, get_certpath, &pGError);
+		if (!dynamic_cert) {
+			if (pGError) {
+				g_warning ("Could not read SSL certificate from : %s", pGError->message);
+				g_error_free (pGError);
+			}
+		}
+	} else
+		g_warning ("Could not acess Dynamic Certificate Path[%s] \n", get_certpath);
+
+	return dynamic_cert;
+}
+#endif
 
 /**
  * soup_socket_new:
@@ -740,11 +860,11 @@ soup_socket_new (const char *optname1, ...)
 }
 
 static void
-proxy_socket_client_event (GSocketClient       *client,
-			   GSocketClientEvent   event,
-			   GSocketConnectable  *connectable,
-			   GIOStream           *connection,
-			   gpointer             user_data)
+re_emit_socket_client_event (GSocketClient       *client,
+			     GSocketClientEvent   event,
+			     GSocketConnectable  *connectable,
+			     GIOStream           *connection,
+			     gpointer             user_data)
 {
 	SoupSocket *sock = user_data;
 
@@ -752,39 +872,115 @@ proxy_socket_client_event (GSocketClient       *client,
 		       event, connection);
 }
 
-static guint
-socket_connected (SoupSocket *sock, GSocketConnection *conn, GError *error)
+static gboolean
+socket_connect_finish (SoupSocket *sock, GSocketConnection *conn)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
-	if (priv->connect_cancel) {
-		GCancellable *cancellable = priv->connect_cancel;
+	g_clear_object (&priv->connect_cancel);
 
-		g_object_unref (priv->connect_cancel);
-		priv->connect_cancel = NULL;
-		if (g_cancellable_is_cancelled (cancellable))
-			return SOUP_STATUS_CANCELLED;
+	if (conn) {
+		priv->conn = (GIOStream *)conn;
+		priv->gsock = g_object_ref (g_socket_connection_get_socket (conn));
+		finish_socket_setup (priv);
+		return TRUE;
+	} else
+		return FALSE;
+}
+
+static guint
+socket_legacy_error (SoupSocket *sock, GError *error)
+{
+	guint status;
+
+	if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		status = SOUP_STATUS_CANCELLED;
+	else if (error->domain == G_RESOLVER_ERROR)
+		status = SOUP_STATUS_CANT_RESOLVE;
+	else
+		status = SOUP_STATUS_CANT_CONNECT;
+
+	g_error_free (error);
+	return status;
+}
+
+static GSocketClient *
+new_socket_client (SoupSocket *sock)
+{
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
+	GSocketClient *client = g_socket_client_new ();
+
+	g_signal_connect (client, "event",
+			  G_CALLBACK (re_emit_socket_client_event), sock);
+	if (priv->proxy_resolver) {
+		g_socket_client_set_proxy_resolver (client, priv->proxy_resolver);
+		g_socket_client_add_application_proxy (client, "http");
+	} else
+		g_socket_client_set_enable_proxy (client, FALSE);
+	if (priv->timeout)
+		g_socket_client_set_timeout (client, priv->timeout);
+
+	if (priv->local_addr) {
+		GSocketAddress *addr;
+
+		addr = soup_address_get_gsockaddr (priv->local_addr);
+		g_socket_client_set_local_address (client, addr);
+		g_object_unref (addr);
 	}
 
-	if (error) {
-		if (error->domain == G_RESOLVER_ERROR) {
-			g_error_free (error);
-			return SOUP_STATUS_CANT_RESOLVE;
-		} else {
-#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-                        if (error->code == G_IO_ERROR_TIMED_OUT)
-                            priv->timedout_error = TRUE;
-#endif
-			g_error_free (error);
-			return SOUP_STATUS_CANT_CONNECT;
-		}
-	}
+	return client;
+}
 
-	priv->conn = (GIOStream *)conn;
-	priv->gsock = g_object_ref (g_socket_connection_get_socket (conn));
-	finish_socket_setup (priv);
+static void
+async_connected (GObject *client, GAsyncResult *result, gpointer data)
+{
+	GTask *task = data;
+	SoupSocket *sock = g_task_get_source_object (task);
+	GSocketConnection *conn;
+	GError *error = NULL;
 
-	return SOUP_STATUS_OK;
+	conn = g_socket_client_connect_finish (G_SOCKET_CLIENT (client),
+					       result, &error);
+	if (socket_connect_finish (sock, conn))
+		g_task_return_boolean (task, TRUE);
+	else
+		g_task_return_error (task, error);
+	g_object_unref (task);
+}
+
+gboolean
+soup_socket_connect_finish_internal (SoupSocket    *sock,
+				     GAsyncResult  *result,
+				     GError       **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+void
+soup_socket_connect_async_internal (SoupSocket          *sock,
+				    GCancellable        *cancellable,
+				    GAsyncReadyCallback  callback,
+				    gpointer             user_data)
+{
+	SoupSocketPrivate *priv;
+	GSocketClient *client;
+	GTask *task;
+
+	g_return_if_fail (SOUP_IS_SOCKET (sock));
+	priv = SOUP_SOCKET_GET_PRIVATE (sock);
+	g_return_if_fail (!priv->is_server);
+	g_return_if_fail (priv->gsock == NULL);
+	g_return_if_fail (priv->remote_addr != NULL);
+
+	priv->connect_cancel = cancellable ? g_object_ref (cancellable) : g_cancellable_new ();
+	task = g_task_new (sock, priv->connect_cancel, callback, user_data);
+
+	client = new_socket_client (sock);
+	g_socket_client_connect_async (client,
+				       G_SOCKET_CONNECTABLE (priv->remote_addr),
+				       priv->connect_cancel,
+				       async_connected, task);
+	g_object_unref (client);
 }
 
 /**
@@ -803,22 +999,25 @@ typedef struct {
 } SoupSocketAsyncConnectData;
 
 static void
-async_connected (GObject *client, GAsyncResult *result, gpointer data)
+legacy_connect_async_cb (GObject       *object,
+			 GAsyncResult  *result,
+			 gpointer       user_data)
 {
-	SoupSocketAsyncConnectData *sacd = data;
-	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sacd->sock);
+	SoupSocket *sock = SOUP_SOCKET (object);
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
+	SoupSocketAsyncConnectData *sacd = user_data;
 	GError *error = NULL;
-	GSocketConnection *conn;
 	guint status;
 
 	if (priv->async_context && !priv->use_thread_context)
 		g_main_context_pop_thread_default (priv->async_context);
 
-	conn = g_socket_client_connect_finish (G_SOCKET_CLIENT (client),
-					       result, &error);
-	status = socket_connected (sacd->sock, conn, error);
+	if (soup_socket_connect_finish_internal (sock, result, &error))
+		status = SOUP_STATUS_OK;
+	else
+		status = socket_legacy_error (sock, error);
 
-	sacd->callback (sacd->sock, status, sacd->user_data);
+	sacd->callback (sock, status, sacd->user_data);
 	g_object_unref (sacd->sock);
 	g_slice_free (SoupSocketAsyncConnectData, sacd);
 }
@@ -844,10 +1043,11 @@ soup_socket_connect_async (SoupSocket *sock, GCancellable *cancellable,
 {
 	SoupSocketPrivate *priv;
 	SoupSocketAsyncConnectData *sacd;
-	GSocketClient *client;
 
 	g_return_if_fail (SOUP_IS_SOCKET (sock));
 	priv = SOUP_SOCKET_GET_PRIVATE (sock);
+	g_return_if_fail (!priv->is_server);
+	g_return_if_fail (priv->gsock == NULL);
 	g_return_if_fail (priv->remote_addr != NULL);
 
 	sacd = g_slice_new0 (SoupSocketAsyncConnectData);
@@ -855,21 +1055,38 @@ soup_socket_connect_async (SoupSocket *sock, GCancellable *cancellable,
 	sacd->callback = callback;
 	sacd->user_data = user_data;
 
-	priv->connect_cancel = cancellable ? g_object_ref (cancellable) : g_cancellable_new ();
-
 	if (priv->async_context && !priv->use_thread_context)
 		g_main_context_push_thread_default (priv->async_context);
 
-	client = g_socket_client_new ();
-	g_signal_connect (client, "event",
-			  G_CALLBACK (proxy_socket_client_event), sock);
-	if (priv->timeout)
-		g_socket_client_set_timeout (client, priv->timeout);
-	g_socket_client_connect_async (client,
-				       G_SOCKET_CONNECTABLE (priv->remote_addr),
-				       priv->connect_cancel,
-				       async_connected, sacd);
+	soup_socket_connect_async_internal (sock, cancellable,
+					    legacy_connect_async_cb,
+					    sacd);
+}
+
+gboolean
+soup_socket_connect_sync_internal (SoupSocket    *sock,
+				   GCancellable  *cancellable,
+				   GError       **error)
+{
+	SoupSocketPrivate *priv;
+	GSocketClient *client;
+	GSocketConnection *conn;
+
+	g_return_val_if_fail (SOUP_IS_SOCKET (sock), SOUP_STATUS_MALFORMED);
+	priv = SOUP_SOCKET_GET_PRIVATE (sock);
+	g_return_val_if_fail (!priv->is_server, SOUP_STATUS_MALFORMED);
+	g_return_val_if_fail (priv->gsock == NULL, SOUP_STATUS_MALFORMED);
+	g_return_val_if_fail (priv->remote_addr != NULL, SOUP_STATUS_MALFORMED);
+
+	priv->connect_cancel = cancellable ? g_object_ref (cancellable) : g_cancellable_new ();
+
+	client = new_socket_client (sock);
+	conn = g_socket_client_connect (client,
+					G_SOCKET_CONNECTABLE (priv->remote_addr),
+					priv->connect_cancel, error);
 	g_object_unref (client);
+
+	return socket_connect_finish (sock, conn);
 }
 
 /**
@@ -889,8 +1106,6 @@ guint
 soup_socket_connect_sync (SoupSocket *sock, GCancellable *cancellable)
 {
 	SoupSocketPrivate *priv;
-	GSocketClient *client;
-	GSocketConnection *conn;
 	GError *error = NULL;
 
 	g_return_val_if_fail (SOUP_IS_SOCKET (sock), SOUP_STATUS_MALFORMED);
@@ -899,25 +1114,23 @@ soup_socket_connect_sync (SoupSocket *sock, GCancellable *cancellable)
 	g_return_val_if_fail (priv->gsock == NULL, SOUP_STATUS_MALFORMED);
 	g_return_val_if_fail (priv->remote_addr != NULL, SOUP_STATUS_MALFORMED);
 
-	if (cancellable)
-		g_object_ref (cancellable);
+	if (soup_socket_connect_sync_internal (sock, cancellable, &error))
+		return SOUP_STATUS_OK;
 	else
-		cancellable = g_cancellable_new ();
-	priv->connect_cancel = cancellable;
-
-	client = g_socket_client_new ();
-	g_signal_connect (client, "event",
-			  G_CALLBACK (proxy_socket_client_event), sock);
-	if (priv->timeout)
-		g_socket_client_set_timeout (client, priv->timeout);
-	conn = g_socket_client_connect (client,
-					G_SOCKET_CONNECTABLE (priv->remote_addr),
-					priv->connect_cancel, &error);
-	g_object_unref (client);
-
-	return socket_connected (sock, conn, error);
+		return socket_legacy_error (sock, error);
 }
 
+/**
+ * soup_socket_get_fd:
+ * @sock: a #SoupSocket
+ *
+ * Gets @sock's underlying file descriptor.
+ *
+ * Note that fiddling with the file descriptor may break the
+ * #SoupSocket.
+ *
+ * Return value: @sock's file descriptor.
+ */
 int
 soup_socket_get_fd (SoupSocket *sock)
 {
@@ -935,11 +1148,19 @@ soup_socket_get_gsocket (SoupSocket *sock)
 }
 
 GIOStream *
-soup_socket_get_iostream (SoupSocket *sock)
+soup_socket_get_connection (SoupSocket *sock)
 {
 	g_return_val_if_fail (SOUP_IS_SOCKET (sock), NULL);
 
 	return SOUP_SOCKET_GET_PRIVATE (sock)->conn;
+}
+
+GIOStream *
+soup_socket_get_iostream (SoupSocket *sock)
+{
+	g_return_val_if_fail (SOUP_IS_SOCKET (sock), NULL);
+
+	return SOUP_SOCKET_GET_PRIVATE (sock)->iostream;
 }
 
 static GSource *
@@ -951,9 +1172,9 @@ soup_socket_create_watch (SoupSocketPrivate *priv, GIOCondition cond,
 	GMainContext *async_context;
 
 	if (cond == G_IO_IN)
-		watch = g_pollable_input_stream_create_source (priv->istream, cancellable);
+		watch = g_pollable_input_stream_create_source (G_POLLABLE_INPUT_STREAM (priv->istream), cancellable);
 	else
-		watch = g_pollable_output_stream_create_source (priv->ostream, cancellable);
+		watch = g_pollable_output_stream_create_source (G_POLLABLE_OUTPUT_STREAM (priv->ostream), cancellable);
 	g_source_set_callback (watch, (GSourceFunc)callback, user_data, NULL);
 
 	if (priv->use_thread_context)
@@ -989,9 +1210,6 @@ listen_watch (GObject *pollable, gpointer data)
 	new_priv->ssl = priv->ssl;
 	if (priv->ssl_creds)
 		new_priv->ssl_creds = priv->ssl_creds;
-#if ENABLE_TIZEN_SPDY
-	new_priv->is_spdy_allowed = priv->is_spdy_allowed;
-#endif
 	finish_socket_setup (new_priv);
 
 	if (new_priv->ssl_creds) {
@@ -1079,7 +1297,12 @@ soup_socket_peer_certificate_changed (GObject *conn, GParamSpec *pspec,
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	if (!priv->acceptedCertificate)
+		priv->tls_errors = g_tls_connection_get_peer_certificate_errors (G_TLS_CONNECTION (priv->conn));
+#else
 	priv->tls_errors = g_tls_connection_get_peer_certificate_errors (G_TLS_CONNECTION (priv->conn));
+#endif
 
 	g_object_notify (sock, "tls-certificate");
 	g_object_notify (sock, "tls-errors");
@@ -1089,40 +1312,32 @@ static gboolean
 soup_socket_accept_certificate (GTlsConnection *conn, GTlsCertificate *cert,
 				GTlsCertificateFlags errors, gpointer sock)
 {
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	gboolean accept = FALSE;
+	SoupSocket *soupSock = sock;
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (soupSock);
+
+	if (priv) {
+#if ENABLE(TIZEN_DLOG)
+		TIZEN_LOGI("[Accept_Certificate] Certificate warning code is [%d], address is [%s]\n", errors, soup_address_get_name (priv->remote_addr));
+#endif
+		g_signal_emit (sock, signals[ACCEPT_CERTIFICATE], 0, cert, errors, &accept);
+#if ENABLE(TIZEN_DLOG)
+		TIZEN_LOGI("[Accept_Certificate] Result is [%d].(1:ignore error; 0:not ignore)\n", accept);
+#endif
+		priv->acceptedCertificate = accept;
+	}
+	return accept;
+#else
 	return TRUE;
+#endif
 }
 
-/**
- * soup_socket_start_ssl:
- * @sock: the socket
- * @cancellable: a #GCancellable
- *
- * Starts using SSL on @socket.
- *
- * Return value: success or failure
- **/
-gboolean
-soup_socket_start_ssl (SoupSocket *sock, GCancellable *cancellable)
-{
-	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
-
-	return soup_socket_start_proxy_ssl (sock, soup_address_get_name (priv->remote_addr), cancellable);
-}
-
-/**
- * soup_socket_start_proxy_ssl:
- * @sock: the socket
- * @ssl_host: hostname of the SSL server
- * @cancellable: a #GCancellable
- *
- * Starts using SSL on @socket, expecting to find a host named
- * @ssl_host.
- *
- * Return value: success or failure
- **/
-gboolean
-soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
-			     GCancellable *cancellable)
+static gboolean
+soup_socket_setup_ssl (SoupSocket    *sock,
+		       const char    *ssl_host,
+		       GCancellable  *cancellable,
+		       GError       **error)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 	GTlsBackend *backend = g_tls_backend_get_default ();
@@ -1130,7 +1345,7 @@ soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
 	if (G_IS_TLS_CONNECTION (priv->conn))
 		return TRUE;
 
-	if (g_cancellable_is_cancelled (cancellable))
+	if (g_cancellable_set_error_if_cancelled (cancellable, error))
 		return FALSE;
 
 	priv->ssl = TRUE;
@@ -1138,16 +1353,49 @@ soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
 	if (!priv->is_server) {
 		GTlsClientConnection *conn;
 		GSocketConnectable *identity;
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+		GTlsCertificate *cert;
+#endif
 
 		identity = g_network_address_new (ssl_host, 0);
-		conn = g_initable_new (g_tls_backend_get_client_connection_type (backend),
-				       NULL, NULL,
-				       "base-io-stream", priv->conn,
-				       "server-identity", identity,
-				       "database", priv->ssl_creds,
-				       "require-close-notify", FALSE,
-				       "use-ssl3", priv->ssl_fallback,
-				       NULL);
+
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+		if (priv->widget_engine) {
+			cert = soup_get_client_certificate (sock, ssl_host);
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+			if(!cert)
+				cert = soup_get_dynamic_client_certificate(sock, ssl_host);
+#endif
+			if (cert)
+				conn = g_initable_new (g_tls_backend_get_client_connection_type (backend),
+						       cancellable, error,
+						       "base-io-stream", priv->conn,
+						       "server-identity", identity,
+						       "database", priv->ssl_creds,
+						       "certificate", cert,
+						       "require-close-notify", FALSE,
+						       "use-ssl3", FALSE,
+						       NULL);
+			else
+				conn = g_initable_new (g_tls_backend_get_client_connection_type (backend),
+						       cancellable, error,
+						       "base-io-stream", priv->conn,
+						       "server-identity", identity,
+						       "database", priv->ssl_creds,
+						       "require-close-notify", FALSE,
+						       "use-ssl3", priv->ssl_fallback,
+						       NULL);
+		}
+		else
+#endif
+			conn = g_initable_new (g_tls_backend_get_client_connection_type (backend),
+					       cancellable, error,
+					       "base-io-stream", priv->conn,
+					       "server-identity", identity,
+					       "database", priv->ssl_creds,
+					       "require-close-notify", FALSE,
+					       "use-ssl3", priv->ssl_fallback,
+					       NULL);
 		g_object_unref (identity);
 
 		if (!conn)
@@ -1165,7 +1413,7 @@ soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
 		GTlsServerConnection *conn;
 
 		conn = g_initable_new (g_tls_backend_get_server_connection_type (backend),
-				       NULL, NULL,
+				       cancellable, error,
 				       "base-io-stream", priv->conn,
 				       "certificate", priv->ssl_creds,
 				       "use-system-certdb", FALSE,
@@ -1181,120 +1429,115 @@ soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
 	g_signal_connect (priv->conn, "notify::peer-certificate",
 			  G_CALLBACK (soup_socket_peer_certificate_changed), sock);
 
-	priv->istream = G_POLLABLE_INPUT_STREAM (g_io_stream_get_input_stream (priv->conn));
-	priv->ostream = G_POLLABLE_OUTPUT_STREAM (g_io_stream_get_output_stream (priv->conn));
+	g_clear_object (&priv->istream);
+	g_clear_object (&priv->ostream);
+	g_clear_object (&priv->iostream);
+	priv->iostream = soup_io_stream_new (priv->conn, FALSE);
+	priv->istream = g_object_ref (g_io_stream_get_input_stream (priv->iostream));
+	priv->ostream = g_object_ref (g_io_stream_get_output_stream (priv->iostream));
+
 	return TRUE;
 }
 
-guint
-soup_socket_handshake_sync (SoupSocket    *sock,
-			    GCancellable  *cancellable)
+/**
+ * soup_socket_start_ssl:
+ * @sock: the socket
+ * @cancellable: a #GCancellable
+ *
+ * Starts using SSL on @socket.
+ *
+ * Return value: success or failure
+ **/
+gboolean
+soup_socket_start_ssl (SoupSocket *sock, GCancellable *cancellable)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
-	GError *error = NULL;
 
-#if ENABLE_TIZEN_SPDY
-	if (priv->is_spdy_allowed)
-		g_tls_connection_set_next_protocols (G_TLS_CONNECTION (priv->conn),
-							__STR_GTLS_SET_NPN);
-#endif
+	return soup_socket_setup_ssl (sock, soup_address_get_name (priv->remote_addr),
+				      cancellable, NULL);
+}
+	
+/**
+ * soup_socket_start_proxy_ssl:
+ * @sock: the socket
+ * @ssl_host: hostname of the SSL server
+ * @cancellable: a #GCancellable
+ *
+ * Starts using SSL on @socket, expecting to find a host named
+ * @ssl_host.
+ *
+ * Return value: success or failure
+ **/
+gboolean
+soup_socket_start_proxy_ssl (SoupSocket *sock, const char *ssl_host,
+			     GCancellable *cancellable)
+{
+	return soup_socket_setup_ssl (sock, ssl_host, cancellable, NULL);
+}
 
-	priv->ssl = TRUE;
-	if (g_tls_connection_handshake (G_TLS_CONNECTION (priv->conn),
-					cancellable, &error)) {
-#if ENABLE_TIZEN_SPDY
-		if (priv->is_spdy_allowed) {
-			const gchar *npn = g_tls_connection_get_next_protocol (G_TLS_CONNECTION (priv->conn));
-			priv->npn_type = convert_to_npn_type (npn);
-			g_free ((gpointer)npn);
+gboolean
+soup_socket_handshake_sync (SoupSocket    *sock,
+			    const char    *ssl_host,
+			    GCancellable  *cancellable,
+			    GError       **error)
+{
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
-			if (priv->npn_type == SOUP_SOCKET_NPN_SPDY2 || priv->npn_type == SOUP_SOCKET_NPN_SPDY3)
-				g_socket_set_timeout (priv->gsock, 0);
-		}
-#endif
-		return SOUP_STATUS_OK;
-	}
-	else if (!priv->ssl_fallback &&
-		 g_error_matches (error, G_TLS_ERROR, G_TLS_ERROR_NOT_TLS)) {
-		g_error_free (error);
-		return SOUP_STATUS_TLS_FAILED;
-	} else {
-		g_error_free (error);
-		return SOUP_STATUS_SSL_FAILED;
-	}
+	if (!soup_socket_setup_ssl (sock, ssl_host, cancellable, error))
+		return FALSE;
+
+	return g_tls_connection_handshake (G_TLS_CONNECTION (priv->conn),
+					   cancellable, error);
 }
 
 static void
 handshake_async_ready (GObject *source, GAsyncResult *result, gpointer user_data)
 {
-	SoupSocketAsyncConnectData *data = user_data;
-	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (data->sock);
+	GTask *task = user_data;
 	GError *error = NULL;
-	guint status;
-
-	if (priv->async_context && !priv->use_thread_context)
-		g_main_context_pop_thread_default (priv->async_context);
 
 	if (g_tls_connection_handshake_finish (G_TLS_CONNECTION (source),
-					       result, &error)) {
-		status = SOUP_STATUS_OK;
-
-#if ENABLE_TIZEN_SPDY
-		if (priv->is_spdy_allowed) {
-			const gchar *npn = g_tls_connection_get_next_protocol (G_TLS_CONNECTION (priv->conn));
-			priv->npn_type = convert_to_npn_type (npn);
-			g_free ((gpointer)npn);
-
-			if (priv->npn_type == SOUP_SOCKET_NPN_SPDY2 || priv->npn_type == SOUP_SOCKET_NPN_SPDY3)
-				g_socket_set_timeout (priv->gsock, 0);
-		}
-#endif
-	} else if (!priv->ssl_fallback &&
-		 g_error_matches (error, G_TLS_ERROR, G_TLS_ERROR_NOT_TLS))
-		status = SOUP_STATUS_TLS_FAILED;
+					       result, &error))
+		g_task_return_boolean (task, TRUE);
 	else
-		status = SOUP_STATUS_SSL_FAILED;
-
-	// Tizen log
-	if (error)
-		TIZEN_LOGD ("sock[%p] status[%d] error code[%d][%s]", data->sock, status, error->code, error->message);
-	// Tizen log end
-
-	g_clear_error (&error);
-
-	data->callback (data->sock, status, data->user_data);
-	g_object_unref (data->sock);
-	g_slice_free (SoupSocketAsyncConnectData, data);
+		g_task_return_error (task, error);
+	g_object_unref (task);
 }
 
 void
-soup_socket_handshake_async (SoupSocket         *sock,
-			     GCancellable       *cancellable,
-			     SoupSocketCallback  callback,
-			     gpointer            user_data)
+soup_socket_handshake_async (SoupSocket          *sock,
+			     const char          *ssl_host,
+			     GCancellable        *cancellable,
+			     GAsyncReadyCallback  callback,
+			     gpointer             user_data)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
-	SoupSocketAsyncConnectData *data;
+	GTask *task;
+	GError *error = NULL;
 
-	priv->ssl = TRUE;
-
-	data = g_slice_new (SoupSocketAsyncConnectData);
-	data->sock = g_object_ref (sock);
-	data->callback = callback;
-	data->user_data = user_data;
-
-#if ENABLE_TIZEN_SPDY
-	if (priv->is_spdy_allowed)
-		g_tls_connection_set_next_protocols (G_TLS_CONNECTION (priv->conn),
-							__STR_GTLS_SET_NPN);
+#if ENABLE(TIZEN_PERFORMANCE_TEST_LOG)
+	prctl_with_url("[EVT] soup handshake start : ", soup_address_get_name(priv->remote_addr));
 #endif
+	task = g_task_new (sock, cancellable, callback, user_data);
 
-	if (priv->async_context && !priv->use_thread_context)
-		g_main_context_push_thread_default (priv->async_context);
+	if (!soup_socket_setup_ssl (sock, ssl_host, cancellable, &error)) {
+		g_task_return_error (task, error);
+		g_object_unref (task);
+		return;
+	}
+
 	g_tls_connection_handshake_async (G_TLS_CONNECTION (priv->conn),
 					  G_PRIORITY_DEFAULT,
 					  cancellable, handshake_async_ready,
-					  data);
+					  task);
+}
+
+gboolean
+soup_socket_handshake_finish (SoupSocket    *sock,
+			      GAsyncResult  *result,
+			      GError       **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 /**
@@ -1313,7 +1556,7 @@ soup_socket_is_ssl (SoupSocket *sock)
 	g_return_val_if_fail (SOUP_IS_SOCKET (sock), FALSE);
 	priv = SOUP_SOCKET_GET_PRIVATE (sock);
 #else
-	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
+        SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 #endif
 
 	return priv->ssl;
@@ -1340,7 +1583,7 @@ soup_socket_disconnect (SoupSocket *sock)
 		g_cancellable_cancel (priv->connect_cancel);
 		return;
 	} else if (g_mutex_trylock (&priv->iolock)) {
-		if (priv->conn)
+		if (priv->gsock)
 			disconnect_internal (sock, TRUE);
 		else
 			already_disconnected = TRUE;
@@ -1363,8 +1606,10 @@ soup_socket_disconnect (SoupSocket *sock)
 	 */
 	g_object_ref (sock);
 
-	/* Give all readers a chance to notice the connection close */
-	g_signal_emit (sock, signals[READABLE], 0);
+	if (priv->non_blocking) {
+		/* Give all readers a chance to notice the connection close */
+		g_signal_emit (sock, signals[READABLE], 0);
+	}
 
 	/* FIXME: can't disconnect until all data is read */
 
@@ -1390,7 +1635,7 @@ soup_socket_is_connected (SoupSocket *sock)
 	g_return_val_if_fail (SOUP_IS_SOCKET (sock), FALSE);
 	priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
-	return priv->conn != NULL;
+	return priv->conn && !g_io_stream_is_closed (priv->conn);
 }
 
 /**
@@ -1398,6 +1643,9 @@ soup_socket_is_connected (SoupSocket *sock)
  * @sock: a #SoupSocket
  *
  * Returns the #SoupAddress corresponding to the local end of @sock.
+ *
+ * Calling this method on an unconnected socket is considered to be
+ * an error, and produces undefined results.
  *
  * Return value: (transfer none): the #SoupAddress
  **/
@@ -1414,13 +1662,25 @@ soup_socket_get_local_address (SoupSocket *sock)
 		GSocketAddress *addr;
 		struct sockaddr_storage sa;
 		gssize sa_len;
+		GError *error = NULL;
 
-		addr = g_socket_get_local_address (priv->gsock, NULL);
+		if (priv->gsock == NULL) {
+			g_warning ("%s: socket not connected", G_STRLOC);
+			goto unlock;
+		}
+
+		addr = g_socket_get_local_address (priv->gsock, &error);
+		if (addr == NULL) {
+			g_warning ("%s: %s", G_STRLOC, error->message);
+			g_error_free (error);
+			goto unlock;
+		}
 		sa_len = g_socket_address_get_native_size (addr);
 		g_socket_address_to_native (addr, &sa, sa_len, NULL);
 		priv->local_addr = soup_address_new_from_sockaddr ((struct sockaddr *)&sa, sa_len);
 		g_object_unref (addr);
 	}
+unlock:
 	g_mutex_unlock (&priv->addrlock);
 
 	return priv->local_addr;
@@ -1431,6 +1691,9 @@ soup_socket_get_local_address (SoupSocket *sock)
  * @sock: a #SoupSocket
  *
  * Returns the #SoupAddress corresponding to the remote end of @sock.
+ *
+ * Calling this method on an unconnected socket is considered to be
+ * an error, and produces undefined results.
  *
  * Return value: (transfer none): the #SoupAddress
  **/
@@ -1447,18 +1710,55 @@ soup_socket_get_remote_address (SoupSocket *sock)
 		GSocketAddress *addr;
 		struct sockaddr_storage sa;
 		gssize sa_len;
+		GError *error = NULL;
 
-		addr = g_socket_get_remote_address (priv->gsock, NULL);
+		if (priv->gsock == NULL) {
+			g_warning ("%s: socket not connected", G_STRLOC);
+			goto unlock;
+		}
+
+		addr = g_socket_get_remote_address (priv->gsock, &error);
+		if (addr == NULL) {
+			g_warning ("%s: %s", G_STRLOC, error->message);
+			g_error_free (error);
+			goto unlock;
+		}
 		sa_len = g_socket_address_get_native_size (addr);
 		g_socket_address_to_native (addr, &sa, sa_len, NULL);
 		priv->remote_addr = soup_address_new_from_sockaddr ((struct sockaddr *)&sa, sa_len);
 		g_object_unref (addr);
 	}
+unlock:
 	g_mutex_unlock (&priv->addrlock);
 
 	return priv->remote_addr;
 }
 
+SoupURI *
+soup_socket_get_http_proxy_uri (SoupSocket *sock)
+{
+	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
+	GSocketAddress *addr;
+	GProxyAddress *paddr;
+	SoupURI *uri;
+
+	if (!priv->gsock)
+		return NULL;
+	addr = g_socket_get_remote_address (priv->gsock, NULL);
+	if (!addr || !G_IS_PROXY_ADDRESS (addr)) {
+		if (addr)
+			g_object_unref (addr);
+		return NULL;
+	}
+
+	paddr = G_PROXY_ADDRESS (addr);
+	if (strcmp (g_proxy_address_get_protocol (paddr), "http") != 0)
+		return NULL;
+
+	uri = soup_uri_new (g_proxy_address_get_uri (paddr));
+	g_object_unref (addr);
+	return uri;
+}
 
 static gboolean
 socket_read_watch (GObject *pollable, gpointer user_data)
@@ -1466,45 +1766,24 @@ socket_read_watch (GObject *pollable, gpointer user_data)
 	SoupSocket *sock = user_data;
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
-#if ENABLE_TIZEN_SPDY
-	if (!priv)
-		return FALSE;
-#endif
-
 	priv->read_src = NULL;
 	g_signal_emit (sock, signals[READABLE], 0);
 	return FALSE;
 }
 
 static SoupSocketIOStatus
-read_from_network (SoupSocket *sock, gpointer buffer, gsize len,
-		   gsize *nread, GCancellable *cancellable, GError **error)
+translate_read_status (SoupSocket *sock, GCancellable *cancellable,
+		       gssize my_nread, gsize *nread,
+		       GError *my_err, GError **error)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
-	GError *my_err = NULL;
-	gssize my_nread;
-
-	*nread = 0;
-
-	if (!priv->conn)
-		return SOUP_SOCKET_EOF;
-
-	if (!priv->non_blocking) {
-		my_nread = g_input_stream_read (G_INPUT_STREAM (priv->istream),
-						buffer, len,
-						cancellable, &my_err);
-	} else {
-		my_nread = g_pollable_input_stream_read_nonblocking (
-			priv->istream, buffer, len,
-			cancellable, &my_err);
-	}
 
 	if (my_nread > 0) {
-		g_clear_error (&my_err);
+		g_assert_no_error (my_err);
 		*nread = my_nread;
 		return SOUP_SOCKET_OK;
 	} else if (my_nread == 0) {
-		g_clear_error (&my_err);
+		g_assert_no_error (my_err);
 		*nread = my_nread;
 		return SOUP_SOCKET_EOF;
 	} else if (g_error_matches (my_err, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {
@@ -1519,29 +1798,7 @@ read_from_network (SoupSocket *sock, gpointer buffer, gsize len,
 	}
 
 	g_propagate_error (error, my_err);
-	TIZEN_LOGD("sock[%p] error[%d][%s]", sock, my_err->code, my_err->message);
 	return SOUP_SOCKET_ERROR;
-}
-
-static SoupSocketIOStatus
-read_from_buf (SoupSocket *sock, gpointer buffer, gsize len, gsize *nread)
-{
-	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
-	GByteArray *read_buf = priv->read_buf;
-
-	*nread = MIN (read_buf->len, len);
-	memcpy (buffer, read_buf->data, *nread);
-
-	if (*nread == read_buf->len) {
-		g_byte_array_free (read_buf, TRUE);
-		priv->read_buf = NULL;
-	} else {
-		memmove (read_buf->data, read_buf->data + *nread, 
-			 read_buf->len - *nread);
-		g_byte_array_set_size (read_buf, read_buf->len - *nread);
-	}
-
-	return SOUP_SOCKET_OK;
 }
 
 /**
@@ -1587,6 +1844,8 @@ soup_socket_read (SoupSocket *sock, gpointer buffer, gsize len,
 {
 	SoupSocketPrivate *priv;
 	SoupSocketIOStatus status;
+	gssize my_nread;
+	GError *my_err = NULL;
 
 	g_return_val_if_fail (SOUP_IS_SOCKET (sock), SOUP_SOCKET_ERROR);
 	g_return_val_if_fail (nread != NULL, SOUP_SOCKET_ERROR);
@@ -1594,10 +1853,24 @@ soup_socket_read (SoupSocket *sock, gpointer buffer, gsize len,
 	priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
 	g_mutex_lock (&priv->iolock);
-	if (priv->read_buf)
-		status = read_from_buf (sock, buffer, len, nread);
-	else
-		status = read_from_network (sock, buffer, len, nread, cancellable, error);
+
+	if (!priv->istream) {
+		status = SOUP_SOCKET_EOF;
+		goto out;
+	}
+
+	if (!priv->non_blocking) {
+		my_nread = g_input_stream_read (priv->istream, buffer, len,
+						cancellable, &my_err);
+	} else {
+		my_nread = g_pollable_input_stream_read_nonblocking (G_POLLABLE_INPUT_STREAM (priv->istream),
+								     buffer, len,
+								     cancellable, &my_err);
+	}
+	status = translate_read_status (sock, cancellable,
+					my_nread, nread, my_err, error);
+
+out:
 	g_mutex_unlock (&priv->iolock);
 
 	return status;
@@ -1639,9 +1912,8 @@ soup_socket_read_until (SoupSocket *sock, gpointer buffer, gsize len,
 {
 	SoupSocketPrivate *priv;
 	SoupSocketIOStatus status;
-	GByteArray *read_buf;
-	guint match_len, prev_len;
-	guint8 *p, *end;
+	gssize my_nread;
+	GError *my_err = NULL;
 
 	g_return_val_if_fail (SOUP_IS_SOCKET (sock), SOUP_SOCKET_ERROR);
 	g_return_val_if_fail (nread != NULL, SOUP_SOCKET_ERROR);
@@ -1653,40 +1925,17 @@ soup_socket_read_until (SoupSocket *sock, gpointer buffer, gsize len,
 
 	*got_boundary = FALSE;
 
-	if (!priv->read_buf)
-		priv->read_buf = g_byte_array_new ();
-	read_buf = priv->read_buf;
-
-	if (read_buf->len < boundary_len) {
-		prev_len = read_buf->len;
-		g_byte_array_set_size (read_buf, len);
-		status = read_from_network (sock,
-					    read_buf->data + prev_len,
-					    len - prev_len, nread, cancellable, error);
-		read_buf->len = prev_len + *nread;
-
-		if (status != SOUP_SOCKET_OK) {
-			g_mutex_unlock (&priv->iolock);
-			return status;
-		}
+	if (!priv->istream)
+		status = SOUP_SOCKET_EOF;
+	else {
+		my_nread = soup_filter_input_stream_read_until (
+			SOUP_FILTER_INPUT_STREAM (priv->istream),
+			buffer, len, boundary, boundary_len,
+			!priv->non_blocking,
+			TRUE, got_boundary, cancellable, &my_err);
+		status = translate_read_status (sock, cancellable,
+						my_nread, nread, my_err, error);
 	}
-
-	/* Scan for the boundary */
-	end = read_buf->data + read_buf->len;
-	for (p = read_buf->data; p <= end - boundary_len; p++) {
-		if (!memcmp (p, boundary, boundary_len)) {
-			p += boundary_len;
-			*got_boundary = TRUE;
-			break;
-		}
-	}
-
-	/* Return everything up to 'p' (which is either just after the
-	 * boundary, or @boundary_len - 1 bytes before the end of the
-	 * buffer).
-	 */
-	match_len = p - read_buf->data;
-	status = read_from_buf (sock, buffer, MIN (len, match_len), nread);
 
 	g_mutex_unlock (&priv->iolock);
 	return status;
@@ -1755,13 +2004,13 @@ soup_socket_write (SoupSocket *sock, gconstpointer buffer,
 	}
 
 	if (!priv->non_blocking) {
-		my_nwrote = g_output_stream_write (G_OUTPUT_STREAM (priv->ostream),
+		my_nwrote = g_output_stream_write (priv->ostream,
 						   buffer, len,
 						   cancellable, &my_err);
 	} else {
 		my_nwrote = g_pollable_output_stream_write_nonblocking (
-			priv->ostream, buffer, len,
-			cancellable, &my_err);
+			G_POLLABLE_OUTPUT_STREAM (priv->ostream),
+			buffer, len, cancellable, &my_err);
 	}
 
 	if (my_nwrote > 0) {
@@ -1786,26 +2035,3 @@ soup_socket_write (SoupSocket *sock, gconstpointer buffer,
 	g_propagate_error (error, my_err);
 	return SOUP_SOCKET_ERROR;
 }
-
-#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-gboolean soup_socket_is_timedout_error (SoupSocket *sock)
-{
-       SoupSocketPrivate *priv;
-       priv = SOUP_SOCKET_GET_PRIVATE (sock);
-
-       return priv->timedout_error;
-}
-#endif
-
-#if ENABLE_TIZEN_SPDY
-SoupSocketNPNType
-soup_socket_get_npn_type	(SoupSocket	*sock)
-{
-	SoupSocketPrivate *priv;
-
-	g_return_val_if_fail (SOUP_IS_SOCKET (sock), SOUP_SOCKET_NPN_DEFAULT);
-	priv = SOUP_SOCKET_GET_PRIVATE (sock);
-
-	return priv->npn_type;
-}
-#endif

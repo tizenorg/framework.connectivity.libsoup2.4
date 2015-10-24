@@ -60,7 +60,9 @@ typedef struct {
 
 GType soup_session_get_type (void);
 
+#define SOUP_SESSION_LOCAL_ADDRESS          "local-address"
 #define SOUP_SESSION_PROXY_URI              "proxy-uri"
+#define SOUP_SESSION_PROXY_RESOLVER         "proxy-resolver"
 #define SOUP_SESSION_MAX_CONNS              "max-conns"
 #define SOUP_SESSION_MAX_CONNS_PER_HOST     "max-conns-per-host"
 #define SOUP_SESSION_USE_NTLM               "use-ntlm"
@@ -83,15 +85,16 @@ GType soup_session_get_type (void);
 /*#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)*/
 #define SOUP_SESSION_CERTIFICATE_PATH        "certificate-path"
 /*#endif*/
-/*#if ENABLE_TIZEN_SPDY*/
-#define SOUP_SESSION_ALLOW_SPDY              "allow-spdy"
-/*#endif*/
-/*#if ENABLE(TIZEN_REDIRECTION_PREDICTOR)*/
-#define SOUP_SESSION_ALLOW_REDIRECTION_PREDICTOR "allow-redirection-predictor"
-/*#endif*/
+//#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#define SOUP_SESSION_WIDGET_ENGINE          "widget-engine"
+//#endif
 
+SOUP_AVAILABLE_IN_2_42
+SoupSession    *soup_session_new              (void);
 
-GMainContext   *soup_session_get_async_context(SoupSession           *session);
+SOUP_AVAILABLE_IN_2_42
+SoupSession    *soup_session_new_with_options (const char *optname1,
+					       ...) G_GNUC_NULL_TERMINATED;
 
 void            soup_session_queue_message    (SoupSession           *session,
 					       SoupMessage           *msg,
@@ -113,35 +116,118 @@ void            soup_session_cancel_message   (SoupSession           *session,
 					       guint                  status_code);
 void            soup_session_abort            (SoupSession           *session);
 
+GMainContext   *soup_session_get_async_context(SoupSession           *session);
+
+SOUP_AVAILABLE_IN_2_42
+void            soup_session_send_async       (SoupSession           *session,
+					       SoupMessage           *msg,
+					       GCancellable          *cancellable,
+					       GAsyncReadyCallback    callback,
+					       gpointer               user_data);
+SOUP_AVAILABLE_IN_2_42
+GInputStream   *soup_session_send_finish      (SoupSession           *session,
+					       GAsyncResult          *result,
+					       GError               **error);
+SOUP_AVAILABLE_IN_2_42
+GInputStream   *soup_session_send             (SoupSession           *session,
+					       SoupMessage           *msg,
+					       GCancellable          *cancellable,
+					       GError               **error);
+
+#ifndef SOUP_DISABLE_DEPRECATED
+/* SOUP_AVAILABLE_IN_2_30 -- this trips up gtkdoc-scan */
+SOUP_DEPRECATED_IN_2_38_FOR (soup_session_prefetch_dns)
 void            soup_session_prepare_for_uri  (SoupSession           *session,
 					       SoupURI               *uri);
+#endif
 
+SOUP_AVAILABLE_IN_2_38
 void            soup_session_prefetch_dns     (SoupSession           *session,
 					       const char            *hostname,
 					       GCancellable          *cancellable,
 					       SoupAddressCallback    callback,
 					       gpointer               user_data);
 
+SOUP_AVAILABLE_IN_2_38
 gboolean        soup_session_would_redirect   (SoupSession           *session,
 					       SoupMessage           *msg);
+SOUP_AVAILABLE_IN_2_38
 gboolean        soup_session_redirect_message (SoupSession           *session,
 					       SoupMessage           *msg);
 
+SOUP_AVAILABLE_IN_2_24
 void                soup_session_add_feature            (SoupSession        *session,
 							 SoupSessionFeature *feature);
+SOUP_AVAILABLE_IN_2_24
 void                soup_session_add_feature_by_type    (SoupSession        *session,
 							 GType               feature_type);
+SOUP_AVAILABLE_IN_2_24
 void                soup_session_remove_feature         (SoupSession        *session,
 							 SoupSessionFeature *feature);
+SOUP_AVAILABLE_IN_2_24
 void                soup_session_remove_feature_by_type (SoupSession        *session,
 							 GType               feature_type);
+SOUP_AVAILABLE_IN_2_42
+gboolean            soup_session_has_feature            (SoupSession        *session,
+							 GType               feature_type);
+SOUP_AVAILABLE_IN_2_26
 GSList             *soup_session_get_features           (SoupSession        *session,
 							 GType               feature_type);
+SOUP_AVAILABLE_IN_2_26
 SoupSessionFeature *soup_session_get_feature            (SoupSession        *session,
 							 GType               feature_type);
+SOUP_AVAILABLE_IN_2_28
 SoupSessionFeature *soup_session_get_feature_for_message(SoupSession        *session,
 							 GType               feature_type,
 							 SoupMessage        *msg);
+
+SOUP_AVAILABLE_IN_2_42
+SoupRequest     *soup_session_request          (SoupSession  *session,
+						const char   *uri_string,
+						GError      **error);
+SOUP_AVAILABLE_IN_2_42
+SoupRequest     *soup_session_request_uri      (SoupSession  *session,
+						SoupURI      *uri,
+						GError      **error);
+SOUP_AVAILABLE_IN_2_42
+SoupRequestHTTP *soup_session_request_http     (SoupSession  *session,
+						const char   *method,
+						const char   *uri_string,
+						GError      **error);
+SOUP_AVAILABLE_IN_2_42
+SoupRequestHTTP *soup_session_request_http_uri (SoupSession  *session,
+						const char   *method,
+						SoupURI      *uri,
+						GError      **error);
+//#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+gboolean
+re_emit_connection_accept_certificate          (SoupConnection      *conn,
+						GTlsCertificate     *certificate,
+						GTlsCertificateFlags errors,
+						gpointer             user_data);
+//#endif
+
+SOUP_AVAILABLE_IN_2_42
+GQuark soup_request_error_quark (void);
+#define SOUP_REQUEST_ERROR soup_request_error_quark ()
+
+typedef enum {
+	SOUP_REQUEST_ERROR_BAD_URI,
+	SOUP_REQUEST_ERROR_UNSUPPORTED_URI_SCHEME,
+	SOUP_REQUEST_ERROR_PARSING,
+	SOUP_REQUEST_ERROR_ENCODING
+} SoupRequestError;
+
+//#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+const char*
+re_emit_connection_dynamic_client_certificate (SoupConnection      *conn,
+					       const char* current_host,
+					       gpointer user_data);
+//#endif
+//#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+void
+soup_session_create_idle_connection(SoupSession *session, SoupURI *uri);
+//#endif
 
 G_END_DECLS
 

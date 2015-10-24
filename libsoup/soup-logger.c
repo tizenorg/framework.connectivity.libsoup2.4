@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2001-2004 Novell, Inc.
  * Copyright (C) 2008 Red Hat, Inc.
+ * Copyright (C) 2013 Igalia, S.L.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -14,11 +15,7 @@
 #include <string.h>
 
 #include "soup-logger.h"
-#include "soup-message.h"
-#include "soup-session.h"
-#include "soup-session-feature.h"
-#include "soup-socket.h"
-#include "soup-uri.h"
+#include "soup.h"
 
 /**
  * SECTION:soup-logger
@@ -56,7 +53,7 @@
  * </screen></informalexample>
  *
  * The <literal>Soup-Debug-Timestamp</literal> line gives the time (as
- * a #time_t) when the request was sent, or the response fully
+ * a <type>time_t</type>) when the request was sent, or the response fully
  * received.
  *
  * The <literal>Soup-Debug</literal> line gives further debugging
@@ -72,23 +69,24 @@
  * the first byte of the request gets written to the network (from the
  * #SoupSession::request_started signal), which means that if you have
  * not made the complete request body available at that point, it will
- * not be logged. The response is logged just after the last byte of
- * the response body is read from the network (from the
- * #SoupMessage::got_body or #SoupMessage::got_informational signal),
- * which means that the #SoupMessage::got_headers signal, and anything
- * triggered off it (such as #SoupSession::authenticate) will be
- * emitted <emphasis>before</emphasis> the response headers are
- * actually logged.
+ * not be logged.
+ *
+ * The response is logged just after the last byte of the response
+ * body is read from the network (from the #SoupMessage::got_body or
+ * #SoupMessage::got_informational signal), which means that the
+ * #SoupMessage::got_headers signal, and anything triggered off it
+ * (such as #SoupSession::authenticate) will be emitted
+ * <emphasis>before</emphasis> the response headers are actually
+ * logged.
+ *
+ * If the response doesn't happen to trigger the
+ * #SoupMessage::got_body nor #SoupMessage::got_informational signals
+ * due to, for example, a cancellation before receiving the last byte
+ * of the response body, the response will still be logged on the
+ * event of the #SoupMessage::finished signal.
  **/
 
 static void soup_logger_session_feature_init (SoupSessionFeatureInterface *feature_interface, gpointer interface_data);
-
-static void request_queued  (SoupSessionFeature *feature, SoupSession *session,
-			     SoupMessage *msg);
-static void request_started  (SoupSessionFeature *feature, SoupSession *session,
-			      SoupMessage *msg, SoupSocket *socket);
-static void request_unqueued  (SoupSessionFeature *feature,
-			       SoupSession *session, SoupMessage *msg);
 
 G_DEFINE_TYPE_WITH_CODE (SoupLogger, soup_logger, G_TYPE_OBJECT,
 			 G_IMPLEMENT_INTERFACE (SOUP_TYPE_SESSION_FEATURE,
@@ -131,7 +129,7 @@ soup_logger_init (SoupLogger *logger)
 }
 
 static void
-finalize (GObject *object)
+soup_logger_finalize (GObject *object)
 {
 	SoupLoggerPrivate *priv = SOUP_LOGGER_GET_PRIVATE (object);
 
@@ -156,16 +154,7 @@ soup_logger_class_init (SoupLoggerClass *logger_class)
 
 	g_type_class_add_private (logger_class, sizeof (SoupLoggerPrivate));
 
-	object_class->finalize = finalize;
-}
-
-static void
-soup_logger_session_feature_init (SoupSessionFeatureInterface *feature_interface,
-				  gpointer interface_data)
-{
-	feature_interface->request_queued = request_queued;
-	feature_interface->request_started = request_started;
-	feature_interface->request_unqueued = request_unqueued;
+	object_class->finalize = soup_logger_finalize;
 }
 
 /**
@@ -385,6 +374,9 @@ soup_logger_detach (SoupLogger  *logger,
 	soup_session_remove_feature (session, SOUP_SESSION_FEATURE (logger));
 }
 
+static void soup_logger_print (SoupLogger *logger, SoupLoggerLogLevel level,
+			       char direction, const char *format, ...) G_GNUC_PRINTF (4, 5);
+
 static void
 soup_logger_print (SoupLogger *logger, SoupLoggerLogLevel level,
 		   char direction, const char *format, ...)
@@ -445,7 +437,7 @@ soup_logger_print_basic_auth (SoupLogger *logger, const char *value)
 			*p = '*';
 	}
 	soup_logger_print (logger, SOUP_LOGGER_LOG_HEADERS, '>',
-			   "Authorization: Basic [%.*s]", len, decoded);
+			   "Authorization: Basic [%.*s]", (int)len, decoded);
 	g_free (decoded);
 }
 
@@ -501,10 +493,22 @@ print_request (SoupLogger *logger, SoupMessage *msg,
 		return;
 
 	if (!soup_message_headers_get_one (msg->request_headers, "Host")) {
+		char *uri_host;
+
+		if (strchr (uri->host, ':'))
+			uri_host = g_strdup_printf ("[%s]", uri->host);
+		else if (g_hostname_is_non_ascii (uri->host))
+			uri_host = g_hostname_to_ascii (uri->host);
+		else
+			uri_host = uri->host;
+
 		soup_logger_print (logger, SOUP_LOGGER_LOG_HEADERS, '>',
-				   "Host: %s%c%u", uri->host,
+				   "Host: %s%c%u", uri_host,
 				   soup_uri_uses_default_port (uri) ? '\0' : ':',
 				   uri->port);
+
+		if (uri_host != uri->host)
+			g_free (uri_host);
 	}
 	soup_message_headers_iter_init (&iter, msg->request_headers);
 	while (soup_message_headers_iter_next (&iter, &name, &value)) {
@@ -582,6 +586,20 @@ print_response (SoupLogger *logger, SoupMessage *msg)
 }
 
 static void
+finished (SoupMessage *msg, gpointer user_data)
+{
+	SoupLogger *logger = user_data;
+	SoupLoggerPrivate *priv = SOUP_LOGGER_GET_PRIVATE (logger);
+
+	g_mutex_lock (&priv->lock);
+
+	print_response (logger, msg);
+	soup_logger_print (logger, SOUP_LOGGER_LOG_MINIMAL, ' ', "");
+
+	g_mutex_unlock (&priv->lock);
+}
+
+static void
 got_informational (SoupMessage *msg, gpointer user_data)
 {
 	SoupLogger *logger = user_data;
@@ -589,6 +607,7 @@ got_informational (SoupMessage *msg, gpointer user_data)
 
 	g_mutex_lock (&priv->lock);
 
+	g_signal_handlers_disconnect_by_func (msg, finished, logger);
 	print_response (logger, msg);
 	soup_logger_print (logger, SOUP_LOGGER_LOG_MINIMAL, ' ', "");
 
@@ -623,6 +642,7 @@ got_body (SoupMessage *msg, gpointer user_data)
 
 	g_mutex_lock (&priv->lock);
 
+	g_signal_handlers_disconnect_by_func (msg, finished, logger);
 	print_response (logger, msg);
 	soup_logger_print (logger, SOUP_LOGGER_LOG_MINIMAL, ' ', "");
 
@@ -630,8 +650,9 @@ got_body (SoupMessage *msg, gpointer user_data)
 }
 
 static void
-request_queued (SoupSessionFeature *logger, SoupSession *session,
-		SoupMessage *msg)
+soup_logger_request_queued (SoupSessionFeature *logger,
+			    SoupSession *session,
+			    SoupMessage *msg)
 {
 	g_return_if_fail (SOUP_IS_MESSAGE (msg));
 
@@ -641,11 +662,16 @@ request_queued (SoupSessionFeature *logger, SoupSession *session,
 	g_signal_connect (msg, "got-body",
 			  G_CALLBACK (got_body),
 			  logger);
+	g_signal_connect (msg, "finished",
+			  G_CALLBACK (finished),
+			  logger);
 }
 
 static void
-request_started (SoupSessionFeature *feature, SoupSession *session,
-		 SoupMessage *msg, SoupSocket *socket)
+soup_logger_request_started (SoupSessionFeature *feature,
+			     SoupSession *session,
+			     SoupMessage *msg,
+			     SoupSocket *socket)
 {
 	SoupLogger *logger = SOUP_LOGGER (feature);
 	gboolean restarted;
@@ -674,11 +700,22 @@ request_started (SoupSessionFeature *feature, SoupSession *session,
 }
 
 static void
-request_unqueued (SoupSessionFeature *logger, SoupSession *session,
-		  SoupMessage *msg)
+soup_logger_request_unqueued (SoupSessionFeature *logger,
+			      SoupSession *session,
+			      SoupMessage *msg)
 {
 	g_return_if_fail (SOUP_IS_MESSAGE (msg));
 
 	g_signal_handlers_disconnect_by_func (msg, got_informational, logger);
 	g_signal_handlers_disconnect_by_func (msg, got_body, logger);
+	g_signal_handlers_disconnect_by_func (msg, finished, logger);
+}
+
+static void
+soup_logger_session_feature_init (SoupSessionFeatureInterface *feature_interface,
+				  gpointer interface_data)
+{
+	feature_interface->request_queued = soup_logger_request_queued;
+	feature_interface->request_started = soup_logger_request_started;
+	feature_interface->request_unqueued = soup_logger_request_unqueued;
 }

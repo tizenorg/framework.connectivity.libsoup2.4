@@ -3,14 +3,17 @@
 /* Apache httpd */
 #undef APACHE_HTTPD
 
-/* Add new feature, which prints logs via Tizen log system named dlog. */
-#undef ENABLE_TIZEN_DLOG
-
-/* Add new feature, SPDY Support for Tizen. */
-#undef ENABLE_TIZEN_SPDY
+/* The gettext domain name */
+#undef GETTEXT_PACKAGE
 
 /* Whether or not apache can be used for tests */
 #undef HAVE_APACHE
+
+/* Apache is 2.2.x */
+#undef HAVE_APACHE_2_2
+
+/* Apache is 2.4.x */
+#undef HAVE_APACHE_2_4
 
 /* Whether or not curl can be used for tests */
 #undef HAVE_CURL
@@ -27,14 +30,11 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
-/* Define to 1 if you have the `socket' library (-lsocket). */
-#undef HAVE_LIBSOCKET
-
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
 
-/* Define to 1 if you have the `mmap' function. */
-#undef HAVE_MMAP
+/* Have php-xmlrpc */
+#undef HAVE_PHP_XMLRPC
 
 /* Define to 1 if you have the <stdint.h> header file. */
 #undef HAVE_STDINT_H

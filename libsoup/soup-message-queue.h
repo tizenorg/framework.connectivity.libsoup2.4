@@ -15,11 +15,6 @@ G_BEGIN_DECLS
 
 typedef enum {
 	SOUP_MESSAGE_STARTING,
-	SOUP_MESSAGE_RESOLVING_PROXY_URI,
-	SOUP_MESSAGE_RESOLVED_PROXY_URI,
-	SOUP_MESSAGE_RESOLVING_PROXY_ADDRESS,
-	SOUP_MESSAGE_RESOLVED_PROXY_ADDRESS,
-	SOUP_MESSAGE_AWAITING_CONNECTION,
 	SOUP_MESSAGE_GOT_CONNECTION,
 	SOUP_MESSAGE_CONNECTING,
 	SOUP_MESSAGE_CONNECTED,
@@ -27,6 +22,7 @@ typedef enum {
 	SOUP_MESSAGE_TUNNELED,
 	SOUP_MESSAGE_READY,
 	SOUP_MESSAGE_RUNNING,
+	SOUP_MESSAGE_CACHED,
 	SOUP_MESSAGE_RESTARTING,
 	SOUP_MESSAGE_FINISHING,
 	SOUP_MESSAGE_FINISHED
@@ -42,23 +38,26 @@ struct _SoupMessageQueueItem {
 	GMainContext *async_context;
 
 	GCancellable *cancellable;
-	SoupAddress *proxy_addr;
-	SoupURI *proxy_uri;
+	GError *error;
+
 	SoupConnection *conn;
+	GTask *task;
+	GSource *io_source;
 
 	guint paused            : 1;
-	guint redirection_count : 31;
+	guint new_api           : 1;
+	guint io_started        : 1;
+	guint async             : 1;
+	guint resend_count      : 28;
 
 	SoupMessageQueueItemState state;
 
 	/*< private >*/
 	guint removed              : 1;
-	guint ref_count            : 31;
+	guint priority             : 3;
+	guint ref_count            : 28;
 	SoupMessageQueueItem *prev, *next;
 	SoupMessageQueueItem *related;
-#if 1//ENABLE (TIZEN_ADAPTIVE_HTTP_TIMEOUT)
-	struct timeval start_time;
-#endif
 };
 
 SoupMessageQueue     *soup_message_queue_new        (SoupSession          *session);
@@ -81,8 +80,6 @@ void                  soup_message_queue_destroy    (SoupMessageQueue     *queue
 
 void soup_message_queue_item_ref            (SoupMessageQueueItem *item);
 void soup_message_queue_item_unref          (SoupMessageQueueItem *item);
-void soup_message_queue_item_set_connection (SoupMessageQueueItem *item,
-					     SoupConnection       *conn);
 
 G_END_DECLS
 

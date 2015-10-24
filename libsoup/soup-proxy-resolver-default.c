@@ -9,21 +9,29 @@
 #include <config.h>
 #endif
 
-#include <string.h>
-#include <stdlib.h>
+#undef SOUP_VERSION_MIN_REQUIRED
+#define SOUP_VERSION_MIN_REQUIRED SOUP_VERSION_2_42
 
 #include "soup-proxy-resolver-default.h"
-#include "soup-proxy-uri-resolver.h"
-#include "soup-session-feature.h"
-#include "soup-uri.h"
+#include "soup.h"
 
 /**
- * SoupProxyResolverDefault:
+ * SECTION:soup-proxy-resolver-default
+ * @short_description: System proxy configuration integration
  *
- * A #SoupProxyURIResolver implementation that uses the default gio
- * #GProxyResolver to resolve proxies.
+ * #SoupProxyResolverDefault is a <type>SoupProxyURIResolver</type>
+ * implementation that uses the default gio #GProxyResolver to resolve
+ * proxies.
+ *
+ * In libsoup 2.44 and later, you can set the session's
+ * #SoupSession:proxy-resolver property to the resolver returned by
+ * g_proxy_resolver_get_default() to get the same effect. Note that
+ * for "plain" #SoupSessions (ie, not #SoupSessionAsync or
+ * #SoupSessionSync), this is done for you automatically.
  *
  * Since: 2.34
+ *
+ * Deprecated: Use #SoupSession:proxy-resolver
  */
 
 static void soup_proxy_resolver_default_interface_init (SoupProxyURIResolverInterface *proxy_resolver_interface);
@@ -83,8 +91,7 @@ soup_proxy_resolver_default_finalize (GObject *object)
 {
 	SoupProxyResolverDefaultPrivate *priv = SOUP_PROXY_RESOLVER_DEFAULT_GET_PRIVATE (object);
 
-	if (priv->gproxy_resolver)
-		g_object_unref (priv->gproxy_resolver);
+	g_clear_object (&priv->gproxy_resolver);
 
 	G_OBJECT_CLASS (soup_proxy_resolver_default_parent_class)->finalize (object);
 }

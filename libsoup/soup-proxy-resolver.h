@@ -10,7 +10,7 @@
 
 G_BEGIN_DECLS
 
-#ifndef LIBSOUP_DISABLE_DEPRECATED
+#ifndef SOUP_DISABLE_DEPRECATED
 
 #define SOUP_TYPE_PROXY_RESOLVER            (soup_proxy_resolver_get_type ())
 #define SOUP_PROXY_RESOLVER(object)         (G_TYPE_CHECK_INSTANCE_CAST ((object), SOUP_TYPE_PROXY_RESOLVER, SoupProxyResolver))
@@ -39,14 +39,17 @@ typedef struct {
 
 } SoupProxyResolverInterface;
 
+SOUP_DEPRECATED_IN_2_28
 GType soup_proxy_resolver_get_type (void);
 
+SOUP_DEPRECATED_IN_2_28
 void  soup_proxy_resolver_get_proxy_async (SoupProxyResolver  *proxy_resolver,
 					   SoupMessage        *msg,
 					   GMainContext       *async_context,
 					   GCancellable       *cancellable,
 					   SoupProxyResolverCallback callback,
 					   gpointer            user_data);
+SOUP_DEPRECATED_IN_2_28
 guint soup_proxy_resolver_get_proxy_sync  (SoupProxyResolver  *proxy_resolver,
 					   SoupMessage        *msg,
 					   GCancellable       *cancellable,

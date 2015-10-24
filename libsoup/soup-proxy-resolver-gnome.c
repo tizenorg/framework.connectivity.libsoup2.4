@@ -9,9 +9,13 @@
 #include <config.h>
 #endif
 
+#undef SOUP_VERSION_MIN_REQUIRED
+#define SOUP_VERSION_MIN_REQUIRED SOUP_VERSION_2_40
+
 #include <string.h>
 
 #include "soup-proxy-resolver-gnome.h"
+#include "soup.h"
 
 G_DEFINE_TYPE (SoupProxyResolverGNOME, soup_proxy_resolver_gnome, SOUP_TYPE_PROXY_RESOLVER_DEFAULT)
 

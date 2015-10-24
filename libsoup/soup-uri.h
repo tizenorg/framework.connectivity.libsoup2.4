@@ -31,18 +31,15 @@ struct _SoupURI {
 GType       soup_uri_get_type              (void);
 #define SOUP_TYPE_URI (soup_uri_get_type ())
 
-#define SOUP_URI_SCHEME_HTTP  _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_HTTP, "http")
-#define SOUP_URI_SCHEME_HTTPS _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_HTTPS, "https")
-#define SOUP_URI_SCHEME_FTP   _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_FTP, "ftp")
-#define SOUP_URI_SCHEME_FILE  _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_FILE, "file")
-#define SOUP_URI_SCHEME_DATA  _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_DATA, "data")
-//#if ENABLE(TIZEN_IGNORE_HOST_CHECK_FOR_TEL_SCHEME)
-#define SOUP_URI_SCHEME_TEL   _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_TEL, "tel")
-extern gpointer _SOUP_URI_SCHEME_TEL;
-//#endif
+#define SOUP_URI_SCHEME_HTTP     _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_HTTP, "http")
+#define SOUP_URI_SCHEME_HTTPS    _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_HTTPS, "https")
+#define SOUP_URI_SCHEME_FTP      _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_FTP, "ftp")
+#define SOUP_URI_SCHEME_FILE     _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_FILE, "file")
+#define SOUP_URI_SCHEME_DATA     _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_DATA, "data")
+#define SOUP_URI_SCHEME_RESOURCE _SOUP_ATOMIC_INTERN_STRING (_SOUP_URI_SCHEME_RESOURCE, "resource")
 extern gpointer _SOUP_URI_SCHEME_HTTP, _SOUP_URI_SCHEME_HTTPS;
 extern gpointer _SOUP_URI_SCHEME_FTP;
-extern gpointer _SOUP_URI_SCHEME_FILE, _SOUP_URI_SCHEME_DATA;
+extern gpointer _SOUP_URI_SCHEME_FILE, _SOUP_URI_SCHEME_DATA, _SOUP_URI_SCHEME_RESOURCE;
 
 SoupURI	   *soup_uri_new_with_base         (SoupURI    *base,
 					    const char *uri_string);
@@ -66,24 +63,31 @@ char  	   *soup_uri_normalize             (const char *part,
 
 gboolean    soup_uri_uses_default_port     (SoupURI    *uri);
 
+SOUP_AVAILABLE_IN_2_32
 const char *soup_uri_get_scheme            (SoupURI    *uri);
 void        soup_uri_set_scheme            (SoupURI    *uri,
 					    const char *scheme);
+SOUP_AVAILABLE_IN_2_32
 const char *soup_uri_get_user              (SoupURI    *uri);
 void        soup_uri_set_user              (SoupURI    *uri,
 					    const char *user);
+SOUP_AVAILABLE_IN_2_32
 const char *soup_uri_get_password          (SoupURI    *uri);
 void        soup_uri_set_password          (SoupURI    *uri,
 					    const char *password);
+SOUP_AVAILABLE_IN_2_32
 const char *soup_uri_get_host              (SoupURI    *uri);
 void        soup_uri_set_host              (SoupURI    *uri,
 					    const char *host);
+SOUP_AVAILABLE_IN_2_32
 guint       soup_uri_get_port              (SoupURI    *uri);
 void        soup_uri_set_port              (SoupURI    *uri,
 					    guint       port);
+SOUP_AVAILABLE_IN_2_32
 const char *soup_uri_get_path              (SoupURI    *uri);
 void        soup_uri_set_path              (SoupURI    *uri,
 					    const char *path);
+SOUP_AVAILABLE_IN_2_32
 const char *soup_uri_get_query             (SoupURI    *uri);
 void        soup_uri_set_query             (SoupURI    *uri,
 					    const char *query);
@@ -92,12 +96,16 @@ void        soup_uri_set_query_from_form   (SoupURI    *uri,
 void        soup_uri_set_query_from_fields (SoupURI    *uri,
 					    const char *first_field,
 					    ...) G_GNUC_NULL_TERMINATED;
+SOUP_AVAILABLE_IN_2_32
 const char *soup_uri_get_fragment          (SoupURI    *uri);
 void        soup_uri_set_fragment          (SoupURI    *uri,
 					    const char *fragment);
 
+SOUP_AVAILABLE_IN_2_28
 SoupURI    *soup_uri_copy_host             (SoupURI    *uri);
+SOUP_AVAILABLE_IN_2_28
 guint       soup_uri_host_hash             (gconstpointer key);
+SOUP_AVAILABLE_IN_2_28
 gboolean    soup_uri_host_equal            (gconstpointer v1,
 					    gconstpointer v2);
 

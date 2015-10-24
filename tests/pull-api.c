@@ -1,15 +1,4 @@
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-
-#include "libsoup/soup.h"
-#include "libsoup/soup-session.h"
+/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*- */
 
 #include "test-utils.h"
 
@@ -23,6 +12,7 @@ authenticate (SoupSession *session, SoupMessage *msg,
 		soup_auth_authenticate (auth, "user2", "realm2");
 }
 
+#if HAVE_APACHE
 static void
 get_correct_response (const char *uri)
 {
@@ -33,8 +23,8 @@ get_correct_response (const char *uri)
 	msg = soup_message_new (SOUP_METHOD_GET, uri);
 	soup_session_send_message (session, msg);
 	if (msg->status_code != SOUP_STATUS_OK) {
-		fprintf (stderr, "Could not fetch %s: %d %s\n", uri,
-			 msg->status_code, msg->reason_phrase);
+		g_printerr ("Could not fetch %s: %d %s\n", uri,
+			    msg->status_code, msg->reason_phrase);
 		exit (1);
 	}
 
@@ -43,6 +33,7 @@ get_correct_response (const char *uri)
 	g_object_unref (msg);
 	soup_test_session_abort_unref (session);
 }
+#endif
 
 /* Pull API version 1: fully-async. More like a "poke" API. Rather
  * than having SoupMessage emit "got_chunk" signals whenever it wants,
@@ -172,9 +163,7 @@ fully_async_got_headers (SoupMessage *msg, gpointer user_data)
 		 */
 		return;
 	} else if (msg->status_code != SOUP_STATUS_OK) {
-		debug_printf (1, "  unexpected status: %d %s\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
+		soup_test_assert_message_status (msg, SOUP_STATUS_OK);
 		return;
 	}
 
@@ -203,18 +192,10 @@ fully_async_got_chunk (SoupMessage *msg, SoupBuffer *chunk, gpointer user_data)
 	 * test program, that means comparing it against
 	 * correct_response to make sure that we got the right data.
 	 */
-	if (ad->read_so_far + chunk->length > correct_response->length) {
-		debug_printf (1, "  read too far! (%lu > %lu)\n",
-			      (unsigned long) (ad->read_so_far + chunk->length),
-			      (unsigned long) correct_response->length);
-		errors++;
-	} else if (memcmp (chunk->data,
-			   correct_response->data + ad->read_so_far,
-			   chunk->length) != 0) {
-		debug_printf (1, "  data mismatch in block starting at %lu\n",
-			      (unsigned long) ad->read_so_far);
-		errors++;
-	}
+	g_assert_cmpint (ad->read_so_far + chunk->length, <=, correct_response->length);
+	soup_assert_cmpmem (chunk->data, chunk->length,
+			    correct_response->data + ad->read_so_far,
+			    chunk->length);
 	ad->read_so_far += chunk->length;
 
 	/* Now pause I/O, and prepare to read another chunk later.
@@ -235,11 +216,7 @@ fully_async_finished (SoupSession *session, SoupMessage *msg,
 {
 	FullyAsyncData *ad = user_data;
 
-	if (msg->status_code != ad->expected_status) {
-		debug_printf (1, "  unexpected final status: %d %s !\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
-	}
+	soup_test_assert_message_status (msg, ad->expected_status);
 
 	if (ad->timeout != 0)
 		g_source_remove (ad->timeout);
@@ -251,6 +228,45 @@ fully_async_finished (SoupSession *session, SoupMessage *msg,
 	g_main_loop_quit (ad->loop);
 }
 
+static void
+do_fast_async_test (gconstpointer data)
+{
+	const char *base_uri = data;
+	SoupSession *session;
+
+	SOUP_TEST_SKIP_IF_NO_APACHE;
+
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+	g_signal_connect (session, "authenticate",
+			  G_CALLBACK (authenticate), NULL);
+	do_fully_async_test (session, base_uri, "/",
+			     TRUE, SOUP_STATUS_OK);
+	do_fully_async_test (session, base_uri, "/Basic/realm1/",
+			     TRUE, SOUP_STATUS_UNAUTHORIZED);
+	do_fully_async_test (session, base_uri, "/Basic/realm2/",
+			     TRUE, SOUP_STATUS_OK);
+	soup_test_session_abort_unref (session);
+}
+
+static void
+do_slow_async_test (gconstpointer data)
+{
+	const char *base_uri = data;
+	SoupSession *session;
+
+	SOUP_TEST_SKIP_IF_NO_APACHE;
+
+	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
+	g_signal_connect (session, "authenticate",
+			  G_CALLBACK (authenticate), NULL);
+	do_fully_async_test (session, base_uri, "/",
+			     FALSE, SOUP_STATUS_OK);
+	do_fully_async_test (session, base_uri, "/Basic/realm1/",
+			     FALSE, SOUP_STATUS_UNAUTHORIZED);
+	do_fully_async_test (session, base_uri, "/Basic/realm2/",
+			     FALSE, SOUP_STATUS_OK);
+	soup_test_session_abort_unref (session);
+}
 
 /* Pull API version 2: synchronous pull API via async I/O. */
 
@@ -295,14 +311,12 @@ do_synchronously_async_test (SoupSession *session,
 
 	/* Send the message, get back headers */
 	sync_async_send (session, msg);
-	if (sync_async_is_finished (msg) &&
-	    expected_status == SOUP_STATUS_OK) {
-		debug_printf (1, "  finished without reading response!\n");
-		errors++;
-	} else if (!sync_async_is_finished (msg) &&
-		   expected_status != SOUP_STATUS_OK) {
-		debug_printf (1, "  request failed to fail!\n");
-		errors++;
+	if (expected_status == SOUP_STATUS_OK) {
+		soup_test_assert (!sync_async_is_finished (msg),
+				  "finished without reading response");
+	} else {
+		soup_test_assert (sync_async_is_finished (msg),
+				  "request failed to fail");
 	}
 
 	/* Now we're ready to read the response body (though we could
@@ -314,32 +328,19 @@ do_synchronously_async_test (SoupSession *session,
 			      (unsigned long) read_so_far,
 			      (unsigned long) read_so_far + chunk->length);
 
-		if (read_so_far + chunk->length > correct_response->length) {
-			debug_printf (1, "  read too far! (%lu > %lu)\n",
-				      (unsigned long) read_so_far + chunk->length,
-				      (unsigned long) correct_response->length);
-			errors++;
-		} else if (memcmp (chunk->data,
-				   correct_response->data + read_so_far,
-				   chunk->length) != 0) {
-			debug_printf (1, "  data mismatch in block starting at %lu\n",
-				      (unsigned long) read_so_far);
-			errors++;
-		}
+		g_assert_cmpint (read_so_far + chunk->length, <=, correct_response->length);
+		soup_assert_cmpmem (chunk->data, chunk->length,
+				    correct_response->data + read_so_far,
+				    chunk->length);
+
 		read_so_far += chunk->length;
 		soup_buffer_free (chunk);
 	}
 
-	if (!sync_async_is_finished (msg) ||
-	    (msg->status_code == SOUP_STATUS_OK &&
-	     read_so_far != correct_response->length)) {
-		debug_printf (1, "  loop ended before message was fully read!\n");
-		errors++;
-	} else if (msg->status_code != expected_status) {
-		debug_printf (1, "  unexpected final status: %d %s !\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
-	}
+	g_assert_true (sync_async_is_finished (msg));
+	soup_test_assert_message_status (msg, expected_status);
+	if (msg->status_code == SOUP_STATUS_OK)
+		g_assert_cmpint (read_so_far, ==, correct_response->length);
 
 	sync_async_cleanup (msg);
 	g_object_unref (msg);
@@ -404,9 +405,7 @@ sync_async_got_headers (SoupMessage *msg, gpointer user_data)
 		 */
 		return;
 	} else if (msg->status_code != SOUP_STATUS_OK) {
-		debug_printf (1, "  unexpected status: %d %s\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
+		soup_test_assert_message_status (msg, SOUP_STATUS_OK);
 		return;
 	}
 
@@ -484,44 +483,14 @@ sync_async_cleanup (SoupMessage *msg)
 	g_free (ad);
 }
 
-
-int
-main (int argc, char **argv)
+static void
+do_sync_async_test (gconstpointer data)
 {
+	const char *base_uri = data;
 	SoupSession *session;
-	const char *base_uri;
 
-	test_init (argc, argv, NULL);
-	apache_init ();
+	SOUP_TEST_SKIP_IF_NO_APACHE;
 
-	base_uri = "http://127.0.0.1:47524/";
-	get_correct_response (base_uri);
-
-	debug_printf (1, "\nFully async, fast requests\n");
-	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
-	g_signal_connect (session, "authenticate",
-			  G_CALLBACK (authenticate), NULL);
-	do_fully_async_test (session, base_uri, "/",
-			     TRUE, SOUP_STATUS_OK);
-	do_fully_async_test (session, base_uri, "/Basic/realm1/",
-			     TRUE, SOUP_STATUS_UNAUTHORIZED);
-	do_fully_async_test (session, base_uri, "/Basic/realm2/",
-			     TRUE, SOUP_STATUS_OK);
-	soup_test_session_abort_unref (session);
-
-	debug_printf (1, "\nFully async, slow requests\n");
-	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
-	g_signal_connect (session, "authenticate",
-			  G_CALLBACK (authenticate), NULL);
-	do_fully_async_test (session, base_uri, "/",
-			     FALSE, SOUP_STATUS_OK);
-	do_fully_async_test (session, base_uri, "/Basic/realm1/",
-			     FALSE, SOUP_STATUS_UNAUTHORIZED);
-	do_fully_async_test (session, base_uri, "/Basic/realm2/",
-			     FALSE, SOUP_STATUS_OK);
-	soup_test_session_abort_unref (session);
-
-	debug_printf (1, "\nSynchronously async\n");
 	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
 	g_signal_connect (session, "authenticate",
 			  G_CALLBACK (authenticate), NULL);
@@ -532,9 +501,33 @@ main (int argc, char **argv)
 	do_synchronously_async_test (session, base_uri, "/Basic/realm2/",
 				     SOUP_STATUS_OK);
 	soup_test_session_abort_unref (session);
+}
 
+
+int
+main (int argc, char **argv)
+{
+	const char *base_uri;
+	int ret;
+
+	test_init (argc, argv, NULL);
+	apache_init ();
+
+	base_uri = "http://127.0.0.1:47524/";
+#if HAVE_APACHE
+	get_correct_response (base_uri);
+#endif
+
+	g_test_add_data_func ("/pull-api/async/fast", base_uri, do_fast_async_test);
+	g_test_add_data_func ("/pull-api/async/slow", base_uri, do_slow_async_test);
+	g_test_add_data_func ("/pull-api/sync-async", base_uri, do_sync_async_test);
+
+	ret = g_test_run ();
+
+#if HAVE_APACHE
 	soup_buffer_free (correct_response);
+#endif
 
 	test_cleanup ();
-	return errors != 0;
+	return ret;
 }

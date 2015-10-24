@@ -8,6 +8,7 @@
 
 #include <gio/gio.h>
 
+#include <libsoup/soup-version.h>
 #include <libsoup/soup-status.h>
 
 G_BEGIN_DECLS
@@ -19,6 +20,8 @@ typedef struct _SoupCookie            SoupCookie;
 typedef struct _SoupCookieJar         SoupCookieJar;
 typedef struct _SoupDate              SoupDate;
 typedef struct _SoupMessage           SoupMessage;
+typedef struct _SoupRequest           SoupRequest;
+typedef struct _SoupRequestHTTP       SoupRequestHTTP;
 typedef struct _SoupServer            SoupServer;
 typedef struct _SoupSession           SoupSession;
 typedef struct _SoupSessionAsync      SoupSessionAsync;
@@ -31,9 +34,6 @@ typedef struct _SoupURI               SoupURI;
 typedef struct _SoupConnection        SoupConnection;
 typedef struct _SoupMessageQueue      SoupMessageQueue;
 typedef struct _SoupMessageQueueItem  SoupMessageQueueItem;
-/* #if ENABLE_TIZEN_SPDY */
-typedef struct _SoupConnectionSpdy    SoupConnectionSpdy;
-/* #endif */
 
 G_END_DECLS
 

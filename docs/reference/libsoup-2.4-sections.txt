@@ -35,6 +35,11 @@ SoupChunkAllocator
 soup_message_set_chunk_allocator
 <SUBSECTION>
 soup_message_disable_feature
+soup_message_get_soup_request
+<SUBSECTION>
+SoupMessagePriority
+soup_message_get_priority
+soup_message_set_priority
 <SUBSECTION>
 SOUP_MESSAGE_METHOD
 SOUP_MESSAGE_URI
@@ -44,9 +49,12 @@ SOUP_MESSAGE_STATUS_CODE
 SOUP_MESSAGE_REASON_PHRASE
 SOUP_MESSAGE_SERVER_SIDE
 SOUP_MESSAGE_FIRST_PARTY
+SOUP_MESSAGE_PRIORITY
 SOUP_MESSAGE_REQUEST_BODY
+SOUP_MESSAGE_REQUEST_BODY_DATA
 SOUP_MESSAGE_REQUEST_HEADERS
 SOUP_MESSAGE_RESPONSE_BODY
+SOUP_MESSAGE_RESPONSE_BODY_DATA
 SOUP_MESSAGE_RESPONSE_HEADERS
 SOUP_MESSAGE_TLS_CERTIFICATE
 SOUP_MESSAGE_TLS_ERRORS
@@ -159,6 +167,7 @@ soup_buffer_get_owner
 soup_buffer_get_data
 soup_buffer_copy
 soup_buffer_free
+soup_buffer_get_as_bytes
 <SUBSECTION>
 SoupMessageBody
 soup_message_body_new
@@ -192,13 +201,14 @@ SOUP_STATUS_IS_SUCCESSFUL
 SOUP_STATUS_IS_REDIRECTION
 SOUP_STATUS_IS_CLIENT_ERROR
 SOUP_STATUS_IS_SERVER_ERROR
-SoupKnownStatusCode
+SoupStatus
 soup_status_get_phrase
 soup_status_proxify
 <SUBSECTION>
 SOUP_HTTP_ERROR
 <SUBSECTION Private>
 soup_http_error_quark
+SoupKnownStatusCode
 </SECTION>
 
 <SECTION>
@@ -240,6 +250,8 @@ SOUP_SERVER_TLS_CERTIFICATE
 SOUP_SERVER_ASYNC_CONTEXT
 SOUP_SERVER_RAW_PATHS
 SOUP_SERVER_SERVER_HEADER
+SOUP_SERVER_HTTP_ALIASES
+SOUP_SERVER_HTTPS_ALIASES
 <SUBSECTION Standard>
 SOUP_SERVER
 SOUP_IS_SERVER
@@ -369,6 +381,7 @@ SOUP_ADDRESS_NAME
 SOUP_ADDRESS_PHYSICAL
 SOUP_ADDRESS_PORT
 SOUP_ADDRESS_SOCKADDR
+SOUP_ADDRESS_PROTOCOL
 <SUBSECTION Standard>
 SOUP_ADDRESS
 SOUP_IS_ADDRESS
@@ -385,12 +398,28 @@ SoupAddressClass
 <TITLE>SoupSession</TITLE>
 SoupSession
 <SUBSECTION>
+soup_session_new
+soup_session_new_with_options
+<SUBSECTION>
+soup_session_request
+soup_session_request_uri
+soup_session_request_http
+soup_session_request_http_uri
+SoupRequestError
+SOUP_REQUEST_ERROR
+<SUBSECTION>
 SoupSessionCallback
 soup_session_queue_message
 soup_session_requeue_message
 soup_session_send_message
 soup_session_cancel_message
+<SUBSECTION>
+soup_session_send
+soup_session_send_async
+soup_session_send_finish
+<SUBSECTION>
 soup_session_prefetch_dns
+soup_session_create_idle_connection
 soup_session_prepare_for_uri
 soup_session_abort
 <SUBSECTION>
@@ -409,15 +438,18 @@ soup_session_remove_feature_by_type
 soup_session_get_features
 soup_session_get_feature
 soup_session_get_feature_for_message
+soup_session_has_feature
 <SUBSECTION>
 SOUP_SESSION_PROXY_URI
+SOUP_SESSION_PROXY_RESOLVER
 SOUP_SESSION_MAX_CONNS
 SOUP_SESSION_MAX_CONNS_PER_HOST
-SOUP_SESSION_USE_NTLM
-SOUP_SESSION_SSL_CA_FILE
-SOUP_SESSION_SSL_USE_SYSTEM_CA_FILE
 SOUP_SESSION_TLS_DATABASE
+SOUP_SESSION_SSL_USE_SYSTEM_CA_FILE
+SOUP_SESSION_SSL_CA_FILE
+SOUP_SESSION_SSL_STRICT
 SOUP_SESSION_ASYNC_CONTEXT
+SOUP_SESSION_USE_THREAD_CONTEXT
 SOUP_SESSION_TIMEOUT
 SOUP_SESSION_IDLE_TIMEOUT
 SOUP_SESSION_USER_AGENT
@@ -426,10 +458,9 @@ SOUP_SESSION_ADD_FEATURE_BY_TYPE
 SOUP_SESSION_REMOVE_FEATURE_BY_TYPE
 SOUP_SESSION_ACCEPT_LANGUAGE
 SOUP_SESSION_ACCEPT_LANGUAGE_AUTO
-SOUP_SESSION_SSL_STRICT
 SOUP_SESSION_HTTP_ALIASES
 SOUP_SESSION_HTTPS_ALIASES
-SOUP_SESSION_USE_THREAD_CONTEXT
+SOUP_SESSION_LOCAL_ADDRESS
 <SUBSECTION Standard>
 SOUP_IS_SESSION
 SOUP_IS_SESSION_CLASS
@@ -439,11 +470,13 @@ SOUP_SESSION_GET_CLASS
 SOUP_TYPE_SESSION
 SoupSessionClass
 soup_session_get_type
+soup_request_error_quark
 <SUBSECTION Private>
 SoupConnection
 SoupConnectionState
 SoupMessageQueue
 SoupMessageQueueItem
+SOUP_SESSION_USE_NTLM
 </SECTION>
 
 <SECTION>
@@ -520,6 +553,7 @@ soup_auth_get_info
 <SUBSECTION>
 soup_auth_authenticate
 soup_auth_is_authenticated
+soup_auth_is_ready
 <SUBSECTION>
 soup_auth_get_authorization
 soup_auth_get_protection_space
@@ -550,6 +584,23 @@ soup_auth_save_password
 </SECTION>
 
 <SECTION>
+<FILE>soup-auth-manager</FILE>
+<TITLE>SoupAuthManager</TITLE>
+SoupAuthManager
+SOUP_TYPE_AUTH_MANAGER
+soup_auth_manager_use_auth
+<SUBSECTION Standard>
+SoupAuthManagerPrivate
+SoupAuthManagerClass
+SOUP_AUTH_MANAGER
+SOUP_IS_AUTH_MANAGER
+SOUP_AUTH_MANAGER_CLASS
+SOUP_IS_AUTH_MANAGER_CLASS
+SOUP_AUTH_MANAGER_GET_CLASS
+soup_auth_manager_get_type
+</SECTION>
+
+<SECTION>
 <FILE>soup-socket</FILE>
 <TITLE>SoupSocket</TITLE>
 SoupSocket
@@ -570,6 +621,7 @@ soup_socket_is_connected
 <SUBSECTION>
 soup_socket_get_local_address
 soup_socket_get_remote_address
+soup_socket_get_fd
 <SUBSECTION>
 SoupSocketIOStatus
 soup_socket_read
@@ -598,12 +650,6 @@ SOUP_SOCKET_CLASS
 SOUP_IS_SOCKET_CLASS
 SOUP_SOCKET_GET_CLASS
 SoupSocketClass
-<SUBSECTION Private>
-soup_socket_get_fd
-soup_socket_handshake_async
-soup_socket_handshake_sync
-soup_socket_get_gsocket
-soup_socket_get_iostream
 </SECTION>
 
 <SECTION>
@@ -630,6 +676,7 @@ SOUP_URI_SCHEME_HTTPS
 SOUP_URI_SCHEME_DATA
 SOUP_URI_SCHEME_FILE
 SOUP_URI_SCHEME_FTP
+SOUP_URI_SCHEME_RESOURCE
 soup_uri_uses_default_port
 SOUP_URI_IS_VALID
 SOUP_URI_VALID_FOR_HTTP
@@ -655,8 +702,6 @@ soup_uri_get_fragment
 <SUBSECTION Standard>
 SOUP_TYPE_URI
 soup_uri_get_type
-<SUBSECTION Private>
-uri_decoded_copy
 </SECTION>
 
 <SECTION>
@@ -704,8 +749,6 @@ soup_add_completion
 soup_add_idle
 soup_add_io_watch
 soup_add_timeout
-<SUBSECTION>
-soup_ssl_supported
 <SUBSECTION Private>
 soup_date_copy
 SOUP_TYPE_DATE
@@ -720,6 +763,7 @@ SOUP_CHAR_HTTP_SEPARATOR
 SOUP_CHAR_URI_GEN_DELIMS
 SOUP_CHAR_URI_PERCENT_ENCODED
 SOUP_CHAR_URI_SUB_DELIMS
+soup_ssl_supported
 </SECTION>
 
 <SECTION>
@@ -877,10 +921,12 @@ soup_cookie_equal
 SoupCookieJar
 soup_cookie_jar_new
 soup_cookie_jar_get_cookies
+soup_cookie_jar_get_cookie_list
 soup_cookie_jar_set_cookie
 soup_cookie_jar_set_cookie_with_first_party
 <SUBSECTION>
 soup_cookie_jar_add_cookie
+soup_cookie_jar_add_cookie_with_first_party
 soup_cookie_jar_delete_cookie
 soup_cookie_jar_all_cookies
 <SUBSECTION>
@@ -924,6 +970,27 @@ soup_multipart_get_type
 </SECTION>
 
 <SECTION>
+<FILE>soup-multipart-input-stream</FILE>
+<TITLE>SoupMultipartInputStream</TITLE>
+SoupMultipartInputStream
+soup_multipart_input_stream_new
+<SUBSECTION>
+soup_multipart_input_stream_get_headers
+soup_multipart_input_stream_next_part
+soup_multipart_input_stream_next_part_async
+soup_multipart_input_stream_next_part_finish
+<SUBSECTION Standard>
+SOUP_IS_MULTIPART_INPUT_STREAM
+SOUP_IS_MULTIPART_INPUT_STREAM_CLASS
+SOUP_MULTIPART_INPUT_STREAM
+SOUP_MULTIPART_INPUT_STREAM_CLASS
+SOUP_MULTIPART_INPUT_STREAM_GET_CLASS
+SOUP_TYPE_MULTIPART_INPUT_STREAM
+soup_multipart_input_stream_get_type
+SoupMultipartInputStreamPrivate
+</SECTION>
+
+<SECTION>
 <FILE>soup-cookie-jar-text</FILE>
 <TITLE>SoupCookieJarText</TITLE>
 SoupCookieJarText
@@ -942,52 +1009,21 @@ soup_cookie_jar_text_get_type
 </SECTION>
 
 <SECTION>
-<INCLUDE>libsoup/soup-gnome.h</INCLUDE>
-<FILE>soup-cookie-jar-sqlite</FILE>
-<TITLE>SoupCookieJarSqlite</TITLE>
-SoupCookieJarSqlite
-soup_cookie_jar_sqlite_new
+<FILE>soup-cookie-jar-db</FILE>
+<TITLE>SoupCookieJarDB</TITLE>
+SoupCookieJarDB
+soup_cookie_jar_db_new
 <SUBSECTION>
-SOUP_COOKIE_JAR_SQLITE_FILENAME
+SOUP_COOKIE_JAR_DB_FILENAME
 <SUBSECTION Standard>
-SoupCookieJarSqliteClass
-SOUP_COOKIE_JAR_SQLITE
-SOUP_COOKIE_JAR_SQLITE_CLASS
-SOUP_COOKIE_JAR_SQLITE_GET_CLASS
-SOUP_TYPE_COOKIE_JAR_SQLITE
-SOUP_IS_COOKIE_JAR_SQLITE
-SOUP_IS_COOKIE_JAR_SQLITE_CLASS
-soup_cookie_jar_sqlite_get_type
-</SECTION>
-
-<SECTION>
-<FILE>soup-proxy-uri-resolver</FILE>
-<TITLE>SoupProxyURIResolver</TITLE>
-SoupProxyURIResolver
-SoupProxyURIResolverCallback
-soup_proxy_uri_resolver_get_proxy_uri_async
-soup_proxy_uri_resolver_get_proxy_uri_sync
-<SUBSECTION Standard>
-SoupProxyURIResolverInterface
-SOUP_IS_PROXY_URI_RESOLVER
-SOUP_IS_PROXY_URI_RESOLVER_CLASS
-SOUP_PROXY_URI_RESOLVER
-SOUP_PROXY_URI_RESOLVER_CLASS
-SOUP_PROXY_URI_RESOLVER_GET_CLASS
-SOUP_TYPE_PROXY_URI_RESOLVER
-soup_proxy_uri_resolver_get_type
-</SECTION>
-
-<SECTION>
-<INCLUDE>libsoup/soup-gnome.h</INCLUDE>
-<FILE>soup-gnome-features</FILE>
-SOUP_TYPE_GNOME_FEATURES_2_26
-SOUP_TYPE_PROXY_RESOLVER_GNOME
-<SUBSECTION Standard>
-soup_proxy_resolver_gnome_get_type
-soup_gnome_features_2_26_get_type
-SOUP_TYPE_PASSWORD_MANAGER_GNOME
-soup_password_manager_gnome_get_type
+SoupCookieJarDBClass
+SOUP_COOKIE_JAR_DB
+SOUP_COOKIE_JAR_DB_CLASS
+SOUP_COOKIE_JAR_DB_GET_CLASS
+SOUP_TYPE_COOKIE_JAR_DB
+SOUP_IS_COOKIE_JAR_DB
+SOUP_IS_COOKIE_JAR_DB_CLASS
+soup_cookie_jar_db_get_type
 </SECTION>
 
 <SECTION>
@@ -996,6 +1032,8 @@ soup_password_manager_gnome_get_type
 SoupContentSniffer
 soup_content_sniffer_new
 soup_content_sniffer_sniff
+soup_content_mime_sniff_set
+soup_content_sniffer_get_buffer_size
 <SUBSECTION Standard>
 SOUP_CONTENT_SNIFFER
 SOUP_CONTENT_SNIFFER_CLASS
@@ -1030,11 +1068,7 @@ SOUP_CACHE_GET_CLASS
 SoupCacheClass
 SoupCachePrivate
 <SUBSECTION Private>
-soup_cache_generate_conditional_request
-soup_cache_get_cacheability
 soup_cache_get_type
-soup_cache_has_response
-soup_cache_send_response
 SoupCacheResponse
 SoupCacheability
 </SECTION>
@@ -1068,30 +1102,6 @@ SOUP_PROXY_RESOLVER_DEFAULT_CLASS
 SOUP_PROXY_RESOLVER_DEFAULT_GET_CLASS
 SOUP_IS_PROXY_RESOLVER_DEFAULT
 SOUP_IS_PROXY_RESOLVER_DEFAULT_CLASS
-</SECTION>
-
-<SECTION>
-<FILE>soup-requester</FILE>
-<TITLE>SoupRequester</TITLE>
-SoupRequester
-soup_requester_new
-soup_requester_request
-soup_requester_request_uri
-<SUBSECTION>
-SoupRequesterError
-SOUP_REQUESTER_ERROR
-<SUBSECTION Standard>
-soup_requester_get_type
-SoupRequesterClass
-SoupRequesterPrivate
-SOUP_TYPE_REQUESTER
-SOUP_REQUESTER
-SOUP_REQUESTER_CLASS
-SOUP_REQUESTER_GET_CLASS
-SOUP_IS_REQUESTER
-SOUP_IS_REQUESTER_CLASS
-<SUBSECTION Private>
-soup_requester_error_quark
 </SECTION>
 
 <SECTION>
@@ -1171,3 +1181,84 @@ SoupRequestHTTPPrivate
 soup_request_http_get_type
 </SECTION>
 
+<SECTION>
+<FILE>soup-tld</FILE>
+<TITLE>Top Level Domain utils</TITLE>
+<SUBSECTION>
+soup_tld_get_base_domain
+soup_tld_domain_is_public_suffix
+<SUBSECTION>
+SOUP_TLD_ERROR
+SoupTLDError
+<SUBSECTION Private>
+soup_tld_error_quark
+</SECTION>
+
+<SECTION>
+<FILE>soup-version</FILE>
+<TITLE>Version Information</TITLE>
+soup_get_major_version
+soup_get_minor_version
+soup_get_micro_version
+soup_check_version
+<SUBSECTION>
+SOUP_MAJOR_VERSION
+SOUP_MINOR_VERSION
+SOUP_MICRO_VERSION
+SOUP_CHECK_VERSION
+<SUBSECTION>
+SOUP_VERSION_MIN_REQUIRED
+SOUP_VERSION_MAX_ALLOWED
+SOUP_VERSION_2_24
+SOUP_VERSION_2_26
+SOUP_VERSION_2_28
+SOUP_VERSION_2_30
+SOUP_VERSION_2_32
+SOUP_VERSION_2_34
+SOUP_VERSION_2_36
+SOUP_VERSION_2_38
+SOUP_VERSION_2_40
+SOUP_VERSION_2_42
+SOUP_VERSION_2_44
+SOUP_VERSION_2_46
+<SUBSECTION Private>
+SOUP_AVAILABLE_IN_2_24
+SOUP_AVAILABLE_IN_2_26
+SOUP_AVAILABLE_IN_2_28
+SOUP_AVAILABLE_IN_2_30
+SOUP_AVAILABLE_IN_2_32
+SOUP_AVAILABLE_IN_2_34
+SOUP_AVAILABLE_IN_2_36
+SOUP_AVAILABLE_IN_2_38
+SOUP_AVAILABLE_IN_2_40
+SOUP_AVAILABLE_IN_2_42
+SOUP_AVAILABLE_IN_2_44
+SOUP_AVAILABLE_IN_2_46
+SOUP_DEPRECATED_IN_2_24
+SOUP_DEPRECATED_IN_2_24_FOR
+SOUP_DEPRECATED_IN_2_26
+SOUP_DEPRECATED_IN_2_26_FOR
+SOUP_DEPRECATED_IN_2_28
+SOUP_DEPRECATED_IN_2_28_FOR
+SOUP_DEPRECATED_IN_2_30
+SOUP_DEPRECATED_IN_2_30_FOR
+SOUP_DEPRECATED_IN_2_32
+SOUP_DEPRECATED_IN_2_32_FOR
+SOUP_DEPRECATED_IN_2_34
+SOUP_DEPRECATED_IN_2_34_FOR
+SOUP_DEPRECATED_IN_2_36
+SOUP_DEPRECATED_IN_2_36_FOR
+SOUP_DEPRECATED_IN_2_38
+SOUP_DEPRECATED_IN_2_38_FOR
+SOUP_DEPRECATED_IN_2_40
+SOUP_DEPRECATED_IN_2_40_FOR
+SOUP_DEPRECATED_IN_2_42
+SOUP_DEPRECATED_IN_2_42_FOR
+SOUP_DEPRECATED_IN_2_44
+SOUP_DEPRECATED_IN_2_44_FOR
+SOUP_DEPRECATED_IN_2_46
+SOUP_DEPRECATED_IN_2_46_FOR
+SOUP_ENCODE_VERSION
+SOUP_VERSION_CUR_STABLE
+SOUP_VERSION_PREV_STABLE
+</SECTION>

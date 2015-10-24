@@ -26,11 +26,11 @@ typedef struct {
 	GObjectClass parent_class;
 
 	/* signals */
-	void (*readable)       (SoupSocket *);
-	void (*writable)       (SoupSocket *);
-	void (*disconnected)   (SoupSocket *);
+	void (*readable)       (SoupSocket *sock);
+	void (*writable)       (SoupSocket *sock);
+	void (*disconnected)   (SoupSocket *sock);
 
-	void (*new_connection) (SoupSocket *, SoupSocket *);
+	void (*new_connection) (SoupSocket *listener, SoupSocket *new_sock);
 
 	/* Padding for future expansion */
 	void (*_libsoup_reserved1) (void);
@@ -52,12 +52,10 @@ typedef struct {
 #define SOUP_SOCKET_TIMEOUT             "timeout"
 #define SOUP_SOCKET_TLS_CERTIFICATE     "tls-certificate"
 #define SOUP_SOCKET_TLS_ERRORS          "tls-errors"
-//#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-#define SOUP_SOCKET_TIMEDOUT_ERROR          "timedout-error"
+
+//#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#define SOUP_SOCKET_WIDGET_ENGINE       "widget-engine"
 //#endif
-/*#if ENABLE_TIZEN_SPDY*/
-#define SOUP_SOCKET_ALLOW_SPDY        "allow-spdy"
-/*#endif*/
 
 typedef void (*SoupSocketCallback)            (SoupSocket         *sock,
 					       guint               status,
@@ -91,26 +89,12 @@ gboolean       soup_socket_is_connected       (SoupSocket         *sock);
 SoupAddress   *soup_socket_get_local_address  (SoupSocket         *sock);
 SoupAddress   *soup_socket_get_remote_address (SoupSocket         *sock);
 
-
 typedef enum {
 	SOUP_SOCKET_OK,
 	SOUP_SOCKET_WOULD_BLOCK,
 	SOUP_SOCKET_EOF,
 	SOUP_SOCKET_ERROR
 } SoupSocketIOStatus;
-
-//#if ENABLE_TIZEN_SPDY
-typedef enum {
-	SOUP_SOCKET_NPN_DEFAULT,
-	SOUP_SOCKET_NPN_HTTP1_1,
-	SOUP_SOCKET_NPN_SPDY2,
-	SOUP_SOCKET_NPN_SPDY3
-} SoupSocketNPNType;
-//#endif
-
-#if defined ENABLE_TIZEN_SPDY && ENABLE_TIZEN_SPDY
-SoupSocketNPNType	soup_socket_get_npn_type	(SoupSocket	*sock);
-#endif
 
 SoupSocketIOStatus  soup_socket_read       (SoupSocket         *sock,
 					    gpointer            buffer,
@@ -134,9 +118,6 @@ SoupSocketIOStatus  soup_socket_write      (SoupSocket         *sock,
 					    gsize              *nwrote,
 					    GCancellable       *cancellable,
 					    GError            **error);
-//#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-gboolean soup_socket_is_timedout_error (SoupSocket  *sock);
-//#endif
 
 G_END_DECLS
 

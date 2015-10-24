@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "soup-multipart.h"
-#include "soup-headers.h"
+#include "soup.h"
 
 /**
  * SECTION:soup-multipart
@@ -48,8 +48,8 @@ soup_multipart_new_internal (char *mime_type, char *boundary)
 	multipart = g_slice_new (SoupMultipart);
 	multipart->mime_type = mime_type;
 	multipart->boundary = boundary;
-	multipart->headers = g_ptr_array_new ();
-	multipart->bodies = g_ptr_array_new ();
+	multipart->headers = g_ptr_array_new_with_free_func ((GDestroyNotify)soup_message_headers_free);
+	multipart->bodies = g_ptr_array_new_with_free_func ((GDestroyNotify)soup_buffer_free);
 
 	return multipart;
 }
@@ -464,15 +464,9 @@ soup_multipart_to_message (SoupMultipart *multipart,
 void
 soup_multipart_free (SoupMultipart *multipart)
 {
-	int i;
-
 	g_free (multipart->mime_type);
 	g_free (multipart->boundary);
-	for (i = 0; i < multipart->headers->len; i++)
-		soup_message_headers_free (multipart->headers->pdata[i]);
 	g_ptr_array_free (multipart->headers, TRUE);
-	for (i = 0; i < multipart->bodies->len; i++)
-		soup_buffer_free (multipart->bodies->pdata[i]);
 	g_ptr_array_free (multipart->bodies, TRUE);
 
 	g_slice_free (SoupMultipart, multipart);
@@ -494,17 +488,4 @@ soup_multipart_copy (SoupMultipart *multipart)
 	return copy;
 }
 
-GType
-soup_multipart_get_type (void)
-{
-	static volatile gsize type_volatile = 0;
-
-	if (g_once_init_enter (&type_volatile)) {
-		GType type = g_boxed_type_register_static (
-			g_intern_static_string ("SoupMultipart"),
-			(GBoxedCopyFunc) soup_multipart_copy,
-			(GBoxedFreeFunc) soup_multipart_free);
-		g_once_init_leave (&type_volatile, type);
-	}
-	return type_volatile;
-}
+G_DEFINE_BOXED_TYPE (SoupMultipart, soup_multipart, soup_multipart_copy, soup_multipart_free)

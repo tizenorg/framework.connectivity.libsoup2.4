@@ -12,21 +12,23 @@
 #include <string.h>
 
 #include "soup-auth-basic.h"
-#include "soup-headers.h"
-#include "soup-message.h"
-#include "soup-misc.h"
-#include "soup-uri.h"
-
-static gboolean update (SoupAuth *auth, SoupMessage *msg, GHashTable *auth_params);
-static GSList *get_protection_space (SoupAuth *auth, SoupURI *source_uri);
-static void authenticate (SoupAuth *auth, const char *username, const char *password);
-static gboolean is_authenticated (SoupAuth *auth);
-static char *get_authorization (SoupAuth *auth, SoupMessage *msg);
+#include "soup.h"
 
 typedef struct {
 	char *token;
 } SoupAuthBasicPrivate;
 #define SOUP_AUTH_BASIC_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_AUTH_BASIC, SoupAuthBasicPrivate))
+
+/**
+ * SOUP_TYPE_AUTH_BASIC:
+ *
+ * A #GType corresponding to HTTP "Basic" authentication.
+ * #SoupSessions support this by default; if you want to disable
+ * support for it, call soup_session_remove_feature_by_type(),
+ * passing %SOUP_TYPE_AUTH_BASIC.
+ *
+ * Since: 2.34
+ */
 
 G_DEFINE_TYPE (SoupAuthBasic, soup_auth_basic, SOUP_TYPE_AUTH)
 
@@ -36,7 +38,7 @@ soup_auth_basic_init (SoupAuthBasic *basic)
 }
 
 static void
-finalize (GObject *object)
+soup_auth_basic_finalize (GObject *object)
 {
 	SoupAuthBasicPrivate *priv = SOUP_AUTH_BASIC_GET_PRIVATE (object);
 
@@ -45,29 +47,9 @@ finalize (GObject *object)
 	G_OBJECT_CLASS (soup_auth_basic_parent_class)->finalize (object);
 }
 
-static void
-soup_auth_basic_class_init (SoupAuthBasicClass *auth_basic_class)
-{
-	SoupAuthClass *auth_class = SOUP_AUTH_CLASS (auth_basic_class);
-	GObjectClass *object_class = G_OBJECT_CLASS (auth_basic_class);
-
-	g_type_class_add_private (auth_basic_class, sizeof (SoupAuthBasicPrivate));
-
-	auth_class->scheme_name = "Basic";
-	auth_class->strength = 1;
-
-	auth_class->update = update;
-	auth_class->get_protection_space = get_protection_space;
-	auth_class->authenticate = authenticate;
-	auth_class->is_authenticated = is_authenticated;
-	auth_class->get_authorization = get_authorization;
-
-	object_class->finalize = finalize;
-}
-
-
 static gboolean
-update (SoupAuth *auth, SoupMessage *msg, GHashTable *auth_params)
+soup_auth_basic_update (SoupAuth *auth, SoupMessage *msg,
+			GHashTable *auth_params)
 {
 	SoupAuthBasicPrivate *priv = SOUP_AUTH_BASIC_GET_PRIVATE (auth);
 
@@ -85,13 +67,13 @@ update (SoupAuth *auth, SoupMessage *msg, GHashTable *auth_params)
 }
 
 static GSList *
-get_protection_space (SoupAuth *auth, SoupURI *source_uri)
+soup_auth_basic_get_protection_space (SoupAuth *auth, SoupURI *source_uri)
 {
 	char *space, *p;
 
 	space = g_strdup (source_uri->path);
 
-	/* Strip query and filename component */
+	/* Strip filename component */
 	p = strrchr (space, '/');
 	if (p && p != space && p[1])
 		*p = '\0';
@@ -100,7 +82,8 @@ get_protection_space (SoupAuth *auth, SoupURI *source_uri)
 }
 
 static void
-authenticate (SoupAuth *auth, const char *username, const char *password)
+soup_auth_basic_authenticate (SoupAuth *auth, const char *username,
+			      const char *password)
 {
 	SoupAuthBasicPrivate *priv = SOUP_AUTH_BASIC_GET_PRIVATE (auth);
 	char *user_pass, *user_pass_latin1;
@@ -127,15 +110,35 @@ authenticate (SoupAuth *auth, const char *username, const char *password)
 }
 
 static gboolean
-is_authenticated (SoupAuth *auth)
+soup_auth_basic_is_authenticated (SoupAuth *auth)
 {
 	return SOUP_AUTH_BASIC_GET_PRIVATE (auth)->token != NULL;
 }
 
 static char *
-get_authorization (SoupAuth *auth, SoupMessage *msg)
+soup_auth_basic_get_authorization (SoupAuth *auth, SoupMessage *msg)
 {
 	SoupAuthBasicPrivate *priv = SOUP_AUTH_BASIC_GET_PRIVATE (auth);
 
 	return g_strdup_printf ("Basic %s", priv->token);
+}
+
+static void
+soup_auth_basic_class_init (SoupAuthBasicClass *auth_basic_class)
+{
+	SoupAuthClass *auth_class = SOUP_AUTH_CLASS (auth_basic_class);
+	GObjectClass *object_class = G_OBJECT_CLASS (auth_basic_class);
+
+	g_type_class_add_private (auth_basic_class, sizeof (SoupAuthBasicPrivate));
+
+	auth_class->scheme_name = "Basic";
+	auth_class->strength = 1;
+
+	auth_class->update = soup_auth_basic_update;
+	auth_class->get_protection_space = soup_auth_basic_get_protection_space;
+	auth_class->authenticate = soup_auth_basic_authenticate;
+	auth_class->is_authenticated = soup_auth_basic_is_authenticated;
+	auth_class->get_authorization = soup_auth_basic_get_authorization;
+
+	object_class->finalize = soup_auth_basic_finalize;
 }

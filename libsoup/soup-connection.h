@@ -10,6 +10,8 @@
 #include "soup-message-private.h"
 #include "soup-misc.h"
 
+#include "TIZEN.h"
+
 G_BEGIN_DECLS
 
 #define SOUP_TYPE_CONNECTION            (soup_connection_get_type ())
@@ -34,13 +36,10 @@ typedef struct {
 
 GType soup_connection_get_type (void);
 
-typedef void  (*SoupConnectionCallback)        (SoupConnection   *conn,
-						guint             status,
-						gpointer          data);
 
-#define SOUP_CONNECTION_REMOTE_ADDRESS  "remote-address"
-#define SOUP_CONNECTION_TUNNEL_ADDRESS  "tunnel-address"
-#define SOUP_CONNECTION_PROXY_URI       "proxy-uri"
+#define SOUP_CONNECTION_LOCAL_ADDRESS   "local-address"
+#define SOUP_CONNECTION_REMOTE_URI      "remote-uri"
+#define SOUP_CONNECTION_PROXY_RESOLVER  "proxy-resolver"
 #define SOUP_CONNECTION_SSL             "ssl"
 #define SOUP_CONNECTION_SSL_CREDENTIALS "ssl-creds"
 #define SOUP_CONNECTION_SSL_STRICT      "ssl-strict"
@@ -51,32 +50,38 @@ typedef void  (*SoupConnectionCallback)        (SoupConnection   *conn,
 #define SOUP_CONNECTION_IDLE_TIMEOUT    "idle-timeout"
 #define SOUP_CONNECTION_STATE           "state"
 #define SOUP_CONNECTION_MESSAGE         "message"
-/*#if ENABLE_TIZEN_SPDY*/
-#define SOUP_CONNECTION_ALLOW_SPDY        "allow-spdy"
-/*#endif*/
+//#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#define SOUP_CONNECTION_WIDGET_ENGINE   "widget-engine"
+//#endif
 
-SoupConnection *soup_connection_new            (const char       *propname1,
-						...) G_GNUC_NULL_TERMINATED;
-
-void            soup_connection_connect_async  (SoupConnection   *conn,
-						GCancellable     *cancellable,
-						SoupConnectionCallback callback,
-						gpointer          user_data);
-guint           soup_connection_connect_sync   (SoupConnection   *conn,
-						GCancellable     *cancellable);
-SoupAddress    *soup_connection_get_tunnel_addr(SoupConnection   *conn);
-guint           soup_connection_start_ssl_sync   (SoupConnection   *conn,
-						  GCancellable     *cancellable);
-void            soup_connection_start_ssl_async  (SoupConnection   *conn,
-						  GCancellable     *cancellable,
-						  SoupConnectionCallback callback,
-						  gpointer          user_data);
+void            soup_connection_connect_async    (SoupConnection       *conn,
+						  GCancellable         *cancellable,
+						  GAsyncReadyCallback   callback,
+						  gpointer              user_data);
+gboolean        soup_connection_connect_finish   (SoupConnection       *conn,
+						  GAsyncResult         *result,
+						  GError              **error);
+gboolean        soup_connection_connect_sync     (SoupConnection       *conn,
+						  GCancellable         *cancellable,
+						  GError              **error);
+gboolean        soup_connection_start_ssl_sync   (SoupConnection       *conn,
+						  GCancellable         *cancellable,
+						  GError              **error);
+void            soup_connection_start_ssl_async  (SoupConnection       *conn,
+						  GCancellable         *cancellable,
+						  GAsyncReadyCallback   callback,
+						  gpointer              user_data);
+gboolean        soup_connection_start_ssl_finish (SoupConnection       *conn,
+						  GAsyncResult         *result,
+						  GError              **error);
 
 void            soup_connection_disconnect     (SoupConnection   *conn);
 
 SoupSocket     *soup_connection_get_socket     (SoupConnection   *conn);
+SoupURI        *soup_connection_get_remote_uri (SoupConnection   *conn);
 SoupURI        *soup_connection_get_proxy_uri  (SoupConnection   *conn);
 gboolean        soup_connection_is_via_proxy   (SoupConnection   *conn);
+gboolean        soup_connection_is_tunnelled   (SoupConnection   *conn);
 
 SoupConnectionState soup_connection_get_state  (SoupConnection   *conn);
 void                soup_connection_set_state  (SoupConnection   *conn,
@@ -91,14 +96,12 @@ void            soup_connection_send_request   (SoupConnection          *conn,
 
 gboolean        soup_connection_get_ssl_fallback (SoupConnection   *conn);
 
-#if defined ENABLE_TIZEN_SPDY && ENABLE_TIZEN_SPDY
-gboolean				 soup_connection_is_spdy_protocol		(SoupConnection	*conn);
-SoupConnectionSpdy	*soup_connection_get_spdy_connection	(SoupConnection	*conn);
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+gboolean              soup_connection_has_current_item (SoupConnection *conn);
+SoupMessageQueueItem *soup_connection_get_current_item (SoupConnection *conn);
+void                  soup_connection_set_current_item (SoupConnection *conn, SoupMessageQueueItem *item);
+void            soup_connection_set_pre_connect_idle (SoupConnection *conn);
 #endif
-
-//#if ENABLE(TIZEN_SOCKET_TIMEDOUT_ERROR)
-gboolean soup_connection_is_timedout_error (SoupConnection *conn);
-//#endif
 
 G_END_DECLS
 

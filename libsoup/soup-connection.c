@@ -9,51 +9,69 @@
 #include <config.h>
 #endif
 
-#include <unistd.h>
-#include <string.h>
-#include <stdlib.h>
-#include <glib.h>
-
-#include <fcntl.h>
-#include <sys/types.h>
-
-#include "soup-address.h"
 #include "soup-connection.h"
-#include "soup-marshal.h"
-#include "soup-message.h"
-#include "soup-message-private.h"
+#include "soup.h"
 #include "soup-message-queue.h"
-#include "soup-misc.h"
 #include "soup-misc-private.h"
-#include "soup-socket.h"
-#include "soup-uri.h"
-#include "soup-enum-types.h"
+
 #include "TIZEN.h"
 
-#if ENABLE_TIZEN_SPDY
-#include "soup-session-private.h"
-#include "soup-connection-spdy-private.h"
+#if ENABLE(TIZEN_PERFORMANCE_TEST_LOG)
+#include <sys/prctl.h>
+#ifndef PR_TASK_PERF_USER_TRACE
+#define PR_TASK_PERF_USER_TRACE 666
+#endif
+static void prctl_with_url(const char *prestr, const char *url)
+{
+	char s[256];
+	int lem_max = 120;
+	int len_pre = strlen(prestr);
+	int len_url = strlen(url);
+
+	strcpy(s, prestr);
+	if(len_pre + len_url < lem_max) {
+		strcpy(s+len_pre, url);
+	}
+	else {
+		int len_part = lem_max - len_pre - 10;
+		strncpy(s+len_pre, url, len_part );
+		strcpy(s+len_pre+len_part, "...");
+		strcpy(s+len_pre+len_part+3, url+len_url-7);
+	}
+	prctl(PR_TASK_PERF_USER_TRACE, s, strlen(s));
+}
+
+static void prctl_with_url_and_free(const char *prestr, char *url)
+{
+	prctl_with_url(prestr, url);
+	g_free(url);
+}
 #endif
 
 typedef struct {
 	SoupSocket  *socket;
 
-	SoupAddress *remote_addr, *tunnel_addr;
-	SoupURI     *proxy_uri;
+	SoupAddress *local_addr;
+	SoupURI *remote_uri, *proxy_uri;
+	GProxyResolver *proxy_resolver;
 	GTlsDatabase *tlsdb;
-	gboolean     ssl, ssl_strict, ssl_fallback;
+	gboolean ssl, ssl_strict, ssl_fallback;
 
 	GMainContext *async_context;
 	gboolean      use_thread_context;
 
-	SoupMessageQueueItem *cur_item;
+	SoupMessage *current_msg;
 	SoupConnectionState state;
 	time_t       unused_timeout;
 	guint        io_timeout, idle_timeout;
 	GSource     *idle_timeout_src;
-#if ENABLE_TIZEN_SPDY
-	gboolean				 is_spdy_allowed;
-	SoupConnectionSpdy	*spdy_conn;
+	gboolean     reusable;
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+	SoupMessageQueueItem *cur_item;
+#endif
+
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	gboolean     widget_engine;
 #endif
 } SoupConnectionPrivate;
 #define SOUP_CONNECTION_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_CONNECTION, SoupConnectionPrivate))
@@ -63,6 +81,12 @@ G_DEFINE_TYPE (SoupConnection, soup_connection, G_TYPE_OBJECT)
 enum {
 	EVENT,
 	DISCONNECTED,
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+	DYNAMIC_CERTIFICATEPATH,
+#endif
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	ACCEPT_CERTIFICATE,
+#endif
 	LAST_SIGNAL
 };
 
@@ -71,9 +95,9 @@ static guint signals[LAST_SIGNAL] = { 0 };
 enum {
 	PROP_0,
 
-	PROP_REMOTE_ADDRESS,
-	PROP_TUNNEL_ADDRESS,
-	PROP_PROXY_URI,
+	PROP_LOCAL_ADDRESS,
+	PROP_REMOTE_URI,
+	PROP_PROXY_RESOLVER,
 	PROP_SSL,
 	PROP_SSL_CREDS,
 	PROP_SSL_STRICT,
@@ -83,20 +107,18 @@ enum {
 	PROP_TIMEOUT,
 	PROP_IDLE_TIMEOUT,
 	PROP_STATE,
-	PROP_MESSAGE,
-#if ENABLE_TIZEN_SPDY
-	PROP_ALLOW_SPDY,
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	PROP_WIDGET_ENGINE,
 #endif
+
 	LAST_PROP
 };
 
-static void set_property (GObject *object, guint prop_id,
-			  const GValue *value, GParamSpec *pspec);
-static void get_property (GObject *object, guint prop_id,
-			  GValue *value, GParamSpec *pspec);
-
 static void stop_idle_timer (SoupConnectionPrivate *priv);
+
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
 static void clear_current_item (SoupConnection *conn);
+#endif
 
 /* Number of seconds after which we close a connection that hasn't yet
  * been used.
@@ -106,52 +128,151 @@ static void clear_current_item (SoupConnection *conn);
 static void
 soup_connection_init (SoupConnection *conn)
 {
-	;
 }
 
 static void
-finalize (GObject *object)
+soup_connection_finalize (GObject *object)
 {
 	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (object);
 
-	if (priv->remote_addr)
-		g_object_unref (priv->remote_addr);
-	if (priv->tunnel_addr)
-		g_object_unref (priv->tunnel_addr);
-	if (priv->proxy_uri)
-		soup_uri_free (priv->proxy_uri);
-	if (priv->tlsdb)
-		g_object_unref (priv->tlsdb);
-	if (priv->async_context)
-		g_main_context_unref (priv->async_context);
-#if ENABLE_TIZEN_SPDY
-	if (priv->spdy_conn)
-		g_object_unref (priv->spdy_conn);
-#endif
+	g_clear_pointer (&priv->remote_uri, soup_uri_free);
+	g_clear_pointer (&priv->proxy_uri, soup_uri_free);
+	g_clear_object (&priv->tlsdb);
+	g_clear_object (&priv->proxy_resolver);
+	g_clear_object (&priv->local_addr);
+	g_clear_pointer (&priv->async_context, g_main_context_unref);
 
 	G_OBJECT_CLASS (soup_connection_parent_class)->finalize (object);
 }
 
 static void
-dispose (GObject *object)
+soup_connection_dispose (GObject *object)
 {
 	SoupConnection *conn = SOUP_CONNECTION (object);
 	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
 	stop_idle_timer (priv);
-	/* Make sure clear_current_item doesn't re-establish the timeout */
-	priv->idle_timeout = 0;
 
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
 	if (priv->cur_item) {
-		g_warning ("Disposing connection with cur_item set");
 		clear_current_item (conn);
 	}
+#endif
 	if (priv->socket) {
 		g_warning ("Disposing connection while connected");
 		soup_connection_disconnect (conn);
 	}
 
 	G_OBJECT_CLASS (soup_connection_parent_class)->dispose (object);
+}
+
+static void
+soup_connection_set_property (GObject *object, guint prop_id,
+			      const GValue *value, GParamSpec *pspec)
+{
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_LOCAL_ADDRESS:
+		priv->local_addr = g_value_dup_object (value);
+		break;
+	case PROP_REMOTE_URI:
+		priv->remote_uri = g_value_dup_boxed (value);
+		break;
+	case PROP_PROXY_RESOLVER:
+		priv->proxy_resolver = g_value_dup_object (value);
+		break;
+	case PROP_SSL:
+		priv->ssl = g_value_get_boolean (value);
+		break;
+	case PROP_SSL_CREDS:
+		if (priv->tlsdb)
+			g_object_unref (priv->tlsdb);
+		priv->tlsdb = g_value_dup_object (value);
+		break;
+	case PROP_SSL_STRICT:
+		priv->ssl_strict = g_value_get_boolean (value);
+		break;
+	case PROP_SSL_FALLBACK:
+		priv->ssl_fallback = g_value_get_boolean (value);
+		break;
+	case PROP_ASYNC_CONTEXT:
+		priv->async_context = g_value_get_pointer (value);
+		if (priv->async_context)
+			g_main_context_ref (priv->async_context);
+		break;
+	case PROP_USE_THREAD_CONTEXT:
+		priv->use_thread_context = g_value_get_boolean (value);
+		break;
+	case PROP_TIMEOUT:
+		priv->io_timeout = g_value_get_uint (value);
+		break;
+	case PROP_IDLE_TIMEOUT:
+		priv->idle_timeout = g_value_get_uint (value);
+		break;
+	case PROP_STATE:
+		soup_connection_set_state (SOUP_CONNECTION (object), g_value_get_uint (value));
+		break;
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	case PROP_WIDGET_ENGINE:
+		priv->widget_engine = g_value_get_boolean (value);
+		break;
+#endif
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static void
+soup_connection_get_property (GObject *object, guint prop_id,
+			      GValue *value, GParamSpec *pspec)
+{
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_LOCAL_ADDRESS:
+		g_value_set_object (value, priv->local_addr);
+		break;
+	case PROP_REMOTE_URI:
+		g_value_set_boxed (value, priv->remote_uri);
+		break;
+	case PROP_SSL:
+		g_value_set_boolean (value, priv->ssl);
+		break;
+	case PROP_SSL_CREDS:
+		g_value_set_object (value, priv->tlsdb);
+		break;
+	case PROP_SSL_STRICT:
+		g_value_set_boolean (value, priv->ssl_strict);
+		break;
+	case PROP_SSL_FALLBACK:
+		g_value_set_boolean (value, priv->ssl_fallback);
+		break;
+	case PROP_ASYNC_CONTEXT:
+		g_value_set_pointer (value, priv->async_context ? g_main_context_ref (priv->async_context) : NULL);
+		break;
+	case PROP_USE_THREAD_CONTEXT:
+		g_value_set_boolean (value, priv->use_thread_context);
+		break;
+	case PROP_TIMEOUT:
+		g_value_set_uint (value, priv->io_timeout);
+		break;
+	case PROP_IDLE_TIMEOUT:
+		g_value_set_uint (value, priv->idle_timeout);
+		break;
+	case PROP_STATE:
+		g_value_set_enum (value, priv->state);
+		break;
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+	case PROP_WIDGET_ENGINE:
+		g_value_set_boolean (value, priv->widget_engine);
+		break;
+#endif
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
 }
 
 static void
@@ -162,10 +283,10 @@ soup_connection_class_init (SoupConnectionClass *connection_class)
 	g_type_class_add_private (connection_class, sizeof (SoupConnectionPrivate));
 
 	/* virtual method override */
-	object_class->dispose = dispose;
-	object_class->finalize = finalize;
-	object_class->set_property = set_property;
-	object_class->get_property = get_property;
+	object_class->dispose = soup_connection_dispose;
+	object_class->finalize = soup_connection_finalize;
+	object_class->set_property = soup_connection_set_property;
+	object_class->get_property = soup_connection_get_property;
 
 	/* signals */
 	signals[EVENT] =
@@ -184,31 +305,55 @@ soup_connection_class_init (SoupConnectionClass *connection_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupConnectionClass, disconnected),
 			      NULL, NULL,
-			      _soup_marshal_NONE__NONE,
+			      NULL,
 			      G_TYPE_NONE, 0);
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	signals[ACCEPT_CERTIFICATE] =
+		g_signal_new ("accept-certificate",
+			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_SIGNAL_RUN_LAST,
+			      0,
+			      NULL, NULL,
+			      NULL,
+			      G_TYPE_BOOLEAN, 2,
+			      G_TYPE_TLS_CERTIFICATE,
+			      G_TYPE_TLS_CERTIFICATE_FLAGS);
+#endif
+
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+	signals[DYNAMIC_CERTIFICATEPATH] =
+		g_signal_new ("dynamic-certificatePath",
+			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_SIGNAL_RUN_LAST,
+			      0,
+			      NULL, NULL,
+			      NULL,
+			      G_TYPE_POINTER, 1,
+			      G_TYPE_POINTER);
+#endif
 
 	/* properties */
 	g_object_class_install_property (
-		object_class, PROP_REMOTE_ADDRESS,
-		g_param_spec_object (SOUP_CONNECTION_REMOTE_ADDRESS,
-				     "Remote address",
-				     "The address of the HTTP or proxy server",
+		object_class, PROP_LOCAL_ADDRESS,
+		g_param_spec_object (SOUP_CONNECTION_LOCAL_ADDRESS,
+				     "Local address",
+				     "Address of local end of socket",
 				     SOUP_TYPE_ADDRESS,
 				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 	g_object_class_install_property (
-		object_class, PROP_TUNNEL_ADDRESS,
-		g_param_spec_object (SOUP_CONNECTION_TUNNEL_ADDRESS,
-				     "Tunnel address",
-				     "The address of the HTTPS server this tunnel connects to",
-				     SOUP_TYPE_ADDRESS,
-				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
-	g_object_class_install_property (
-		object_class, PROP_PROXY_URI,
-		g_param_spec_boxed (SOUP_CONNECTION_PROXY_URI,
-				    "Proxy URI",
-				    "URI of the HTTP proxy this connection connects to",
+		object_class, PROP_REMOTE_URI,
+		g_param_spec_boxed (SOUP_CONNECTION_REMOTE_URI,
+				    "Remote URI",
+				    "The URI of the HTTP server",
 				    SOUP_TYPE_URI,
-				    G_PARAM_READWRITE));
+				    G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+	g_object_class_install_property (
+		object_class, PROP_PROXY_RESOLVER,
+		g_param_spec_object (SOUP_CONNECTION_PROXY_RESOLVER,
+				     "Proxy resolver",
+				     "GProxyResolver to use",
+				     G_TYPE_PROXY_RESOLVER,
+				     G_PARAM_WRITABLE | G_PARAM_CONSTRUCT_ONLY));
 	g_object_class_install_property (
 		object_class, PROP_SSL,
 		g_param_spec_boolean (SOUP_CONNECTION_SSL,
@@ -271,158 +416,62 @@ soup_connection_class_init (SoupConnectionClass *connection_class)
 				   "Current state of connection",
 				   SOUP_TYPE_CONNECTION_STATE, SOUP_CONNECTION_NEW,
 				   G_PARAM_READWRITE));
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
 	g_object_class_install_property (
-		object_class, PROP_MESSAGE,
-		g_param_spec_object (SOUP_CONNECTION_MESSAGE,
-				     "Message",
-				     "Message being processed",
-				     SOUP_TYPE_MESSAGE,
-				     G_PARAM_READABLE));
-#if ENABLE_TIZEN_SPDY
-	g_object_class_install_property (
-		object_class, PROP_ALLOW_SPDY,
-		g_param_spec_boolean (SOUP_CONNECTION_ALLOW_SPDY,
-					"flag to decide to allow spdy or not",
-					"Set TRUE if want to use spdy feature",
-					FALSE,
+		object_class, PROP_WIDGET_ENGINE,
+		g_param_spec_boolean (SOUP_CONNECTION_WIDGET_ENGINE,
+				      "widget engine",
+				      "Whether or not to be running Widget Engine",
+				      FALSE,
 				      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 #endif
 }
 
-
-SoupConnection *
-soup_connection_new (const char *propname1, ...)
-{
-	SoupConnection *conn;
-	va_list ap;
-
-	va_start (ap, propname1);
-	conn = (SoupConnection *)g_object_new_valist (SOUP_TYPE_CONNECTION,
-						      propname1, ap);
-	va_end (ap);
-
-	return conn;
-}
-
 static void
-set_property (GObject *object, guint prop_id,
-	      const GValue *value, GParamSpec *pspec)
+soup_connection_event (SoupConnection      *conn,
+		       GSocketClientEvent   event,
+		       GIOStream           *connection)
 {
-	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (object);
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
-	switch (prop_id) {
-	case PROP_REMOTE_ADDRESS:
-		priv->remote_addr = g_value_dup_object (value);
-		break;
-	case PROP_TUNNEL_ADDRESS:
-		priv->tunnel_addr = g_value_dup_object (value);
-		break;
-	case PROP_PROXY_URI:
-		if (priv->proxy_uri)
-			soup_uri_free (priv->proxy_uri);
-		priv->proxy_uri = g_value_dup_boxed (value);
-		break;
-	case PROP_SSL:
-		priv->ssl = g_value_get_boolean (value);
-		break;
-	case PROP_SSL_CREDS:
-		if (priv->tlsdb)
-			g_object_unref (priv->tlsdb);
-		priv->tlsdb = g_value_dup_object (value);
-		break;
-	case PROP_SSL_STRICT:
-		priv->ssl_strict = g_value_get_boolean (value);
-		break;
-	case PROP_SSL_FALLBACK:
-		priv->ssl_fallback = g_value_get_boolean (value);
-		break;
-	case PROP_ASYNC_CONTEXT:
-		priv->async_context = g_value_get_pointer (value);
-		if (priv->async_context)
-			g_main_context_ref (priv->async_context);
-		break;
-	case PROP_USE_THREAD_CONTEXT:
-		priv->use_thread_context = g_value_get_boolean (value);
-		break;
-	case PROP_TIMEOUT:
-		priv->io_timeout = g_value_get_uint (value);
-		break;
-	case PROP_IDLE_TIMEOUT:
-		priv->idle_timeout = g_value_get_uint (value);
-		break;
-	case PROP_STATE:
-		soup_connection_set_state (SOUP_CONNECTION (object), g_value_get_uint (value));
-		break;
-#if ENABLE_TIZEN_SPDY
-	case PROP_ALLOW_SPDY:
-		priv->is_spdy_allowed = g_value_get_boolean (value);
-		break;
-#endif
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
+	if (!connection && priv->socket)
+		connection = soup_socket_get_connection (priv->socket);
+
+	g_signal_emit (conn, signals[EVENT], 0,
+		       event, connection);
 }
 
-static void
-get_property (GObject *object, guint prop_id,
-	      GValue *value, GParamSpec *pspec)
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+static const char*
+soup_connection_dynamic_client_certificate (SoupSocket *sock,
+					    const char* current_host,
+					    gpointer user_data)
 {
-	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (object);
+	SoupConnection* conn = user_data;
+	const char* get_certpath = NULL;
 
-	switch (prop_id) {
-	case PROP_REMOTE_ADDRESS:
-		g_value_set_object (value, priv->remote_addr);
-		break;
-	case PROP_TUNNEL_ADDRESS:
-		g_value_set_object (value, priv->tunnel_addr);
-		break;
-	case PROP_PROXY_URI:
-		g_value_set_boxed (value, priv->proxy_uri);
-		break;
-	case PROP_SSL:
-		g_value_set_boolean (value, priv->ssl);
-		break;
-	case PROP_SSL_CREDS:
-		g_value_set_object (value, priv->tlsdb);
-		break;
-	case PROP_SSL_STRICT:
-		g_value_set_boolean (value, priv->ssl_strict);
-		break;
-	case PROP_SSL_FALLBACK:
-		g_value_set_boolean (value, priv->ssl_fallback);
-		break;
-	case PROP_ASYNC_CONTEXT:
-		g_value_set_pointer (value, priv->async_context ? g_main_context_ref (priv->async_context) : NULL);
-		break;
-	case PROP_USE_THREAD_CONTEXT:
-		g_value_set_boolean (value, priv->use_thread_context);
-		break;
-	case PROP_TIMEOUT:
-		g_value_set_uint (value, priv->io_timeout);
-		break;
-	case PROP_IDLE_TIMEOUT:
-		g_value_set_uint (value, priv->idle_timeout);
-		break;
-	case PROP_STATE:
-		g_value_set_enum (value, priv->state);
-		break;
-	case PROP_MESSAGE:
-		if (priv->cur_item)
-			g_value_set_object (value, priv->cur_item->msg);
-		else
-			g_value_set_object (value, NULL);
-		break;
-#if ENABLE(TIZEN_SPDY)
-	case PROP_ALLOW_SPDY:
-		g_value_set_boolean (value, priv->is_spdy_allowed);
-		break;
-#endif
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
+	g_signal_emit (conn, signals[DYNAMIC_CERTIFICATEPATH], 0,
+		       current_host, &get_certpath);
+
+	return get_certpath;
 }
+#endif
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+static gboolean
+soup_connection_accept_certificate (SoupSocket *sock,
+				    GTlsCertificate* certificate,
+				    GTlsCertificateFlags errors,
+				    gpointer user_data)
+{
+	SoupConnection* conn = user_data;
+	gboolean accept = FALSE;
+
+	g_signal_emit (conn, signals[ACCEPT_CERTIFICATE], 0,
+		       certificate, errors, &accept);
+
+	return accept;
+}
+#endif
 
 static gboolean
 idle_timeout (gpointer conn)
@@ -454,13 +503,71 @@ stop_idle_timer (SoupConnectionPrivate *priv)
 }
 
 static void
-current_item_restarted (SoupMessage *msg, gpointer user_data)
+current_msg_got_body (SoupMessage *msg, gpointer user_data)
 {
 	SoupConnection *conn = user_data;
 	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
-	if(priv)
-		priv->unused_timeout = 0;
+	priv->unused_timeout = 0;
+
+	if (priv->proxy_uri &&
+	    msg->method == SOUP_METHOD_CONNECT &&
+	    SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
+		soup_connection_event (conn, G_SOCKET_CLIENT_PROXY_NEGOTIATED, NULL);
+
+		/* We're now effectively no longer proxying */
+		g_clear_pointer (&priv->proxy_uri, soup_uri_free);
+	}
+
+	priv->reusable = soup_message_is_keepalive (msg);
+}
+
+static void
+clear_current_msg (SoupConnection *conn)
+{
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+	SoupMessage *msg;
+
+	msg = priv->current_msg;
+	priv->current_msg = NULL;
+
+	g_signal_handlers_disconnect_by_func (msg, G_CALLBACK (current_msg_got_body), conn);
+	g_object_unref (msg);
+}
+
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+gboolean
+soup_connection_has_current_item (SoupConnection *conn)
+{
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+
+	if (priv)
+		return (priv->cur_item == NULL) ? FALSE : TRUE;
+	else
+		return FALSE;
+}
+
+SoupMessageQueueItem *
+soup_connection_get_current_item (SoupConnection *conn)
+{
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+
+	if (priv)
+		return priv->cur_item;
+	else
+		return NULL;
+}
+
+static void
+clear_current_item (SoupConnection *conn)
+{
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+
+	g_return_if_fail (priv != NULL);
+
+	g_object_freeze_notify (G_OBJECT (conn));
+	if (priv->cur_item)
+		priv->cur_item = NULL;
 }
 
 static void
@@ -468,105 +575,66 @@ set_current_item (SoupConnection *conn, SoupMessageQueueItem *item)
 {
 	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
+	g_return_if_fail (priv != NULL);
+
+	priv->cur_item = item;
+}
+
+
+
+/* soup_connection_set_current_item() sets only item, and does not change any state.
+ * That is what this function is different from set_current_item() above. */
+void
+soup_connection_set_current_item (SoupConnection *conn, SoupMessageQueueItem *item)
+{
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+
+	g_return_if_fail (priv != NULL);
 	g_return_if_fail (priv->cur_item == NULL);
 
 	g_object_freeze_notify (G_OBJECT (conn));
 
 	stop_idle_timer (priv);
 
-	item->state = SOUP_MESSAGE_RUNNING;
 	priv->cur_item = item;
-	g_object_notify (G_OBJECT (conn), "message");
-
-	g_signal_connect (item->msg, "restarted",
-			  G_CALLBACK (current_item_restarted), conn);
-
-	if (item->msg->method == SOUP_METHOD_CONNECT) {
-		g_signal_emit (conn, signals[EVENT], 0,
-			       G_SOCKET_CLIENT_PROXY_NEGOTIATING,
-			       soup_socket_get_iostream (priv->socket));
-	} else if (priv->state == SOUP_CONNECTION_IDLE)
-		soup_connection_set_state (conn, SOUP_CONNECTION_IN_USE);
 
 	g_object_thaw_notify (G_OBJECT (conn));
 }
+#endif
 
 static void
-clear_current_item (SoupConnection *conn)
+set_current_msg (SoupConnection *conn, SoupMessage *msg)
 {
 	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-#if ENABLE_TIZEN_SPDY
-	gboolean is_spdy = FALSE;
-#endif
+
+	g_return_if_fail (priv->state == SOUP_CONNECTION_IN_USE);
 
 	g_object_freeze_notify (G_OBJECT (conn));
 
-	priv->unused_timeout = 0;
-
-#if ENABLE_TIZEN_SPDY
-	is_spdy = soup_connection_is_spdy_protocol (conn);
-	if (!is_spdy) {
-#endif
-
-	start_idle_timer (conn);
-
-#if ENABLE_TIZEN_SPDY
+	if (priv->current_msg) {
+		g_return_if_fail (priv->current_msg->method == SOUP_METHOD_CONNECT);
+		clear_current_msg (conn);
 	}
-#endif
 
-	if (priv->cur_item) {
-		SoupMessageQueueItem *item;
+	stop_idle_timer (priv);
 
-		item = priv->cur_item;
-		priv->cur_item = NULL;
-		g_object_notify (G_OBJECT (conn), "message");
+	priv->current_msg = g_object_ref (msg);
+	priv->reusable = FALSE;
 
-		g_signal_handlers_disconnect_by_func (item->msg, G_CALLBACK (current_item_restarted), conn);
+	g_signal_connect (msg, "got-body",
+			  G_CALLBACK (current_msg_got_body), conn);
 
-		if (item->msg->method == SOUP_METHOD_CONNECT &&
-		    SOUP_STATUS_IS_SUCCESSFUL (item->msg->status_code)) {
-			g_signal_emit (conn, signals[EVENT], 0,
-				       G_SOCKET_CLIENT_PROXY_NEGOTIATED,
-				       soup_socket_get_iostream (priv->socket));
-
-			/* We're now effectively no longer proxying */
-			soup_uri_free (priv->proxy_uri);
-			priv->proxy_uri = NULL;
-		}
-
-#if ENABLE_TIZEN_SPDY
-		if (!is_spdy) {
-#endif
-			if (!soup_message_is_keepalive (item->msg))
-				soup_connection_disconnect (conn);
-#if ENABLE_TIZEN_SPDY
-		}
-#endif
-	}
+	if (priv->proxy_uri && msg->method == SOUP_METHOD_CONNECT)
+		soup_connection_event (conn, G_SOCKET_CLIENT_PROXY_NEGOTIATING, NULL);
 
 	g_object_thaw_notify (G_OBJECT (conn));
 }
 
-
 static void
-soup_connection_event (SoupConnection      *conn,
-		       GSocketClientEvent   event,
-		       GIOStream           *connection)
-{
-	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-
-	if (!connection && priv->socket)
-		connection = soup_socket_get_iostream (priv->socket);
-
-	g_signal_emit (conn, signals[EVENT], 0,
-		       event, connection);
-}
-
-static void
-proxy_socket_event (SoupSocket          *socket,
-		    GSocketClientEvent   event,
-		    GIOStream           *connection,
-		    gpointer             user_data)
+re_emit_socket_event (SoupSocket          *socket,
+		      GSocketClientEvent   event,
+		      GIOStream           *connection,
+		      gpointer             user_data)
 {
 	SoupConnection *conn = user_data;
 
@@ -576,126 +644,88 @@ proxy_socket_event (SoupSocket          *socket,
 }
 
 static void
-socket_disconnected (SoupSocket *sock, gpointer conn)
+socket_connect_finished (GTask *task, SoupSocket *sock, GError *error)
 {
-	soup_connection_disconnect (conn);
-}
+	SoupConnection *conn = g_task_get_source_object (task);
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
-typedef struct {
-	SoupConnection *conn;
-	SoupConnectionCallback callback;
-	gpointer callback_data;
-	GCancellable *cancellable;
-	guint event_id;
-	gboolean tls_handshake;
-} SoupConnectionAsyncConnectData;
+	if (priv->async_context && !priv->use_thread_context)
+		g_main_context_pop_thread_default (priv->async_context);
 
-static void
-socket_connect_finished (SoupSocket *socket, guint status, gpointer user_data)
-{
-	SoupConnectionAsyncConnectData *data = user_data;
-	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (data->conn);
+	g_signal_handlers_disconnect_by_func (sock, G_CALLBACK (re_emit_socket_event), conn);
 
-	g_signal_handler_disconnect (socket, data->event_id);
-
-	if (SOUP_STATUS_IS_SUCCESSFUL (status)) {
-		g_signal_connect (priv->socket, "disconnected",
-				  G_CALLBACK (socket_disconnected), data->conn);
-
-		if (data->tls_handshake) {
-#if ENABLE_TIZEN_SPDY
-			SoupSocketNPNType npn = soup_socket_get_npn_type (socket);
-
-			if (npn == SOUP_SOCKET_NPN_SPDY2)
-				priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY2, NULL);
-			else if (npn == SOUP_SOCKET_NPN_SPDY3)
-				priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY3, NULL);
-
-			if (priv->spdy_conn)
-				soup_connection_spdy_set_connection (priv->spdy_conn, data->conn);
-#endif
-			soup_connection_event (data->conn,
+	if (!error) {
+		if (priv->ssl && !priv->proxy_uri) {
+			soup_connection_event (conn,
 					       G_SOCKET_CLIENT_TLS_HANDSHAKED,
 					       NULL);
 		}
-		if (!priv->ssl || !priv->tunnel_addr) {
-			soup_connection_event (data->conn,
+		if (!priv->ssl || !priv->proxy_uri) {
+			soup_connection_event (conn,
 					       G_SOCKET_CLIENT_COMPLETE,
 					       NULL);
 		}
 
-		soup_connection_set_state (data->conn, SOUP_CONNECTION_IN_USE);
+		soup_connection_set_state (conn, SOUP_CONNECTION_IN_USE);
 		priv->unused_timeout = time (NULL) + SOUP_CONNECTION_UNUSED_TIMEOUT;
-		start_idle_timer (data->conn);
-	} else if (status == SOUP_STATUS_TLS_FAILED) {
-		priv->ssl_fallback = TRUE;
-		status = SOUP_STATUS_TRY_AGAIN;
-	}
+		start_idle_timer (conn);
 
-	if (data->callback) {
-		if (priv->proxy_uri != NULL)
-			status = soup_status_proxify (status);
-		data->callback (data->conn, status, data->callback_data);
-	}
-	g_object_unref (data->conn);
-	if (data->cancellable)
-		g_object_unref (data->cancellable);
-	g_slice_free (SoupConnectionAsyncConnectData, data);
+		g_task_return_boolean (task, TRUE);
+	} else
+		g_task_return_error (task, error);
+	g_object_unref (task);
 }
 
 static void
-socket_connect_result (SoupSocket *sock, guint status, gpointer user_data)
+socket_handshake_complete (GObject *object, GAsyncResult *result, gpointer user_data)
 {
-	SoupConnectionAsyncConnectData *data = user_data;
+	SoupSocket *sock = SOUP_SOCKET (object);
+	GTask *task = user_data;
+	GError *error = NULL;
 
-	if (SOUP_STATUS_IS_SUCCESSFUL (status) &&
-	    data->tls_handshake) {
-		if (soup_socket_start_ssl (sock, data->cancellable)) {
-			soup_connection_event (data->conn,
-					       G_SOCKET_CLIENT_TLS_HANDSHAKING,
-					       NULL);
-			soup_socket_handshake_async (sock, data->cancellable,
-						     socket_connect_finished, data);
-			return;
-		}
+	soup_socket_handshake_finish (sock, result, &error);
+	socket_connect_finished (task, sock, error);
+}
 
-		status = SOUP_STATUS_SSL_FAILED;
+static void
+socket_connect_complete (GObject *object, GAsyncResult *result, gpointer user_data)
+{
+	SoupSocket *sock = SOUP_SOCKET (object);
+	GTask *task = user_data;
+	SoupConnection *conn = g_task_get_source_object (task);
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+	GError *error = NULL;
+
+	if (!soup_socket_connect_finish_internal (sock, result, &error)) {
+		socket_connect_finished (task, sock, error);
+		return;
 	}
 
-	socket_connect_finished (sock, status, data);
+	priv->proxy_uri = soup_socket_get_http_proxy_uri (sock);
+
+	if (priv->ssl && !priv->proxy_uri) {
+		soup_connection_event (conn,
+				       G_SOCKET_CLIENT_TLS_HANDSHAKING,
+				       NULL);
+
+		soup_socket_handshake_async (sock, priv->remote_uri->host,
+					     g_task_get_cancellable (task),
+					     socket_handshake_complete, task);
+		return;
+	}
+
+	socket_connect_finished (task, sock, NULL);
 }
-
-#if ENABLE_TIZEN_SPDY
-gboolean
-soup_connection_is_spdy_protocol (SoupConnection *conn)
-{
-	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-
-	if (!priv->is_spdy_allowed)
-		return FALSE;
-
-	return priv->spdy_conn ? TRUE : FALSE;
-}
-
-SoupConnectionSpdy *
-soup_connection_get_spdy_connection (SoupConnection	*conn)
-{
-	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-	if (priv)
-		return priv->spdy_conn;
-
-	return NULL;
-}
-#endif
 
 void
-soup_connection_connect_async (SoupConnection *conn,
-			       GCancellable *cancellable,
-			       SoupConnectionCallback callback,
-			       gpointer user_data)
+soup_connection_connect_async (SoupConnection      *conn,
+			       GCancellable        *cancellable,
+			       GAsyncReadyCallback  callback,
+			       gpointer             user_data)
 {
-	SoupConnectionAsyncConnectData *data;
 	SoupConnectionPrivate *priv;
+	SoupAddress *remote_addr;
+	GTask *task;
 
 	g_return_if_fail (SOUP_IS_CONNECTION (conn));
 	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
@@ -703,243 +733,225 @@ soup_connection_connect_async (SoupConnection *conn,
 
 	soup_connection_set_state (conn, SOUP_CONNECTION_CONNECTING);
 
-	data = g_slice_new (SoupConnectionAsyncConnectData);
-	data->conn = g_object_ref (conn);
-	data->callback = callback;
-	data->callback_data = user_data;
-	data->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
-	data->tls_handshake = (priv->ssl && !priv->tunnel_addr);
+	/* Set the protocol to ensure correct proxy resolution. */
+	remote_addr =
+		g_object_new (SOUP_TYPE_ADDRESS,
+			      SOUP_ADDRESS_NAME, priv->remote_uri->host,
+			      SOUP_ADDRESS_PORT, priv->remote_uri->port,
+			      SOUP_ADDRESS_PROTOCOL, priv->remote_uri->scheme,
+			      NULL);
 
 	priv->socket =
-		soup_socket_new (SOUP_SOCKET_REMOTE_ADDRESS, priv->remote_addr,
+		soup_socket_new (SOUP_SOCKET_REMOTE_ADDRESS, remote_addr,
 				 SOUP_SOCKET_SSL_CREDENTIALS, priv->tlsdb,
 				 SOUP_SOCKET_SSL_STRICT, priv->ssl_strict,
 				 SOUP_SOCKET_SSL_FALLBACK, priv->ssl_fallback,
 				 SOUP_SOCKET_ASYNC_CONTEXT, priv->async_context,
 				 SOUP_SOCKET_USE_THREAD_CONTEXT, priv->use_thread_context,
+				 SOUP_SOCKET_PROXY_RESOLVER, priv->proxy_resolver,
 				 SOUP_SOCKET_TIMEOUT, priv->io_timeout,
-				 "clean-dispose", TRUE,
-#if ENABLE_TIZEN_SPDY
-				 SOUP_SOCKET_ALLOW_SPDY, priv->is_spdy_allowed,
+				 SOUP_SOCKET_CLEAN_DISPOSE, TRUE,
+				 SOUP_SOCKET_LOCAL_ADDRESS, priv->local_addr,
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+				 SOUP_SOCKET_WIDGET_ENGINE, priv->widget_engine,
 #endif
 				 NULL);
-	data->event_id = g_signal_connect (priv->socket, "event",
-					   G_CALLBACK (proxy_socket_event),
-					   conn);
-	soup_socket_connect_async (priv->socket, cancellable,
-				   socket_connect_result, data);
+	g_object_unref (remote_addr);
+
+	g_signal_connect (priv->socket, "event",
+			  G_CALLBACK (re_emit_socket_event), conn);
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	g_signal_connect (priv->socket, "accept-certificate",
+			  G_CALLBACK (soup_connection_accept_certificate), conn);
+#endif
+
+#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+	g_signal_connect (priv->socket, "dynamic-certificatePath",
+				  G_CALLBACK (soup_connection_dynamic_client_certificate), conn);
+#endif
+	if (priv->async_context && !priv->use_thread_context)
+		g_main_context_push_thread_default (priv->async_context);
+	task = g_task_new (conn, cancellable, callback, user_data);
+
+	soup_socket_connect_async_internal (priv->socket, cancellable,
+					    socket_connect_complete, task);
 }
 
-guint
-soup_connection_connect_sync (SoupConnection *conn, GCancellable *cancellable)
+gboolean
+soup_connection_connect_finish (SoupConnection  *conn,
+				GAsyncResult    *result,
+				GError         **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+gboolean
+soup_connection_connect_sync (SoupConnection  *conn,
+			      GCancellable    *cancellable,
+			      GError         **error)
 {
 	SoupConnectionPrivate *priv;
-	guint status, event_id;
+	guint event_id = 0;
+	SoupAddress *remote_addr;
+	gboolean success = TRUE;
 
-	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), SOUP_STATUS_MALFORMED);
+	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), FALSE);
 	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-	g_return_val_if_fail (priv->socket == NULL, SOUP_STATUS_MALFORMED);
+	g_return_val_if_fail (priv->socket == NULL, FALSE);
 
 	soup_connection_set_state (conn, SOUP_CONNECTION_CONNECTING);
 
+	/* Set the protocol to ensure correct proxy resolution. */
+	remote_addr =
+		g_object_new (SOUP_TYPE_ADDRESS,
+			      SOUP_ADDRESS_NAME, priv->remote_uri->host,
+			      SOUP_ADDRESS_PORT, priv->remote_uri->port,
+			      SOUP_ADDRESS_PROTOCOL, priv->remote_uri->scheme,
+			      NULL);
+
 	priv->socket =
-		soup_socket_new (SOUP_SOCKET_REMOTE_ADDRESS, priv->remote_addr,
+		soup_socket_new (SOUP_SOCKET_REMOTE_ADDRESS, remote_addr,
+				 SOUP_SOCKET_PROXY_RESOLVER, priv->proxy_resolver,
 				 SOUP_SOCKET_SSL_CREDENTIALS, priv->tlsdb,
 				 SOUP_SOCKET_SSL_STRICT, priv->ssl_strict,
 				 SOUP_SOCKET_SSL_FALLBACK, priv->ssl_fallback,
 				 SOUP_SOCKET_FLAG_NONBLOCKING, FALSE,
 				 SOUP_SOCKET_TIMEOUT, priv->io_timeout,
-				 "clean-dispose", TRUE,
-#if ENABLE_TIZEN_SPDY
-				 SOUP_SOCKET_ALLOW_SPDY, priv->is_spdy_allowed,
+				 SOUP_SOCKET_CLEAN_DISPOSE, TRUE,
+				 SOUP_SOCKET_LOCAL_ADDRESS, priv->local_addr,
+#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+				 SOUP_SOCKET_WIDGET_ENGINE, priv->widget_engine,
 #endif
 				 NULL);
+	g_object_unref (remote_addr);
 
 	event_id = g_signal_connect (priv->socket, "event",
-				     G_CALLBACK (proxy_socket_event), conn);
-	status = soup_socket_connect_sync (priv->socket, cancellable);
-
-	if (!SOUP_STATUS_IS_SUCCESSFUL (status))
-		goto fail;
-
-	if (priv->ssl && !priv->tunnel_addr) {
-		if (!soup_socket_start_ssl (priv->socket, cancellable))
-			status = SOUP_STATUS_SSL_FAILED;
-		else {
-			soup_connection_event (conn,
-					       G_SOCKET_CLIENT_TLS_HANDSHAKING,
-					       NULL);
-			status = soup_socket_handshake_sync (priv->socket, cancellable);
-			if (status == SOUP_STATUS_OK) {
-#if ENABLE_TIZEN_SPDY
-				SoupSocketNPNType npn = soup_socket_get_npn_type (priv->socket);
-
-				if (npn == SOUP_SOCKET_NPN_SPDY2)
-					priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY2, NULL);
-				else if (npn == SOUP_SOCKET_NPN_SPDY3)
-					priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY3, NULL);
+				     G_CALLBACK (re_emit_socket_event), conn);
+#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+	g_signal_connect (priv->socket, "accept-certificate",
+			  G_CALLBACK (soup_connection_accept_certificate), conn);
 #endif
-				soup_connection_event (conn,
-						       G_SOCKET_CLIENT_TLS_HANDSHAKED,
-						       NULL);
-			} else if (status == SOUP_STATUS_TLS_FAILED) {
-				priv->ssl_fallback = TRUE;
-				status = SOUP_STATUS_TRY_AGAIN;
-			}
-		}
+
+	if (!soup_socket_connect_sync_internal (priv->socket, cancellable, error)) {
+		success = FALSE;
+		goto done;
 	}
 
-	if (SOUP_STATUS_IS_SUCCESSFUL (status)) {
-		g_signal_connect (priv->socket, "disconnected",
-				  G_CALLBACK (socket_disconnected), conn);
+	priv->proxy_uri = soup_socket_get_http_proxy_uri (priv->socket);
 
-		if (!priv->ssl || !priv->tunnel_addr) {
-			soup_connection_event (conn,
-					       G_SOCKET_CLIENT_COMPLETE,
-					       NULL);
+	if (priv->ssl && !priv->proxy_uri) {
+		soup_connection_event (conn,
+				       G_SOCKET_CLIENT_TLS_HANDSHAKING,
+				       NULL);
+		if (!soup_socket_handshake_sync (priv->socket,
+						 priv->remote_uri->host,
+						 cancellable, error)) {
+			success = FALSE;
+			goto done;
 		}
-		soup_connection_set_state (conn, SOUP_CONNECTION_IN_USE);
-		priv->unused_timeout = time (NULL) + SOUP_CONNECTION_UNUSED_TIMEOUT;
-		start_idle_timer (conn);
-	} else {
-	fail:
-		if (priv->socket) {
-			soup_socket_disconnect (priv->socket);
-			g_object_unref (priv->socket);
-			priv->socket = NULL;
-		}
+		soup_connection_event (conn,
+				       G_SOCKET_CLIENT_TLS_HANDSHAKED,
+				       NULL);
 	}
 
-	if (priv->socket)
+	if (!priv->ssl || !priv->proxy_uri) {
+		soup_connection_event (conn,
+				       G_SOCKET_CLIENT_COMPLETE,
+				       NULL);
+	}
+	soup_connection_set_state (conn, SOUP_CONNECTION_IN_USE);
+	priv->unused_timeout = time (NULL) + SOUP_CONNECTION_UNUSED_TIMEOUT;
+	start_idle_timer (conn);
+
+ done:
+	if (priv->socket && event_id)
 		g_signal_handler_disconnect (priv->socket, event_id);
 
-	if (priv->proxy_uri != NULL)
-		status = soup_status_proxify (status);
-	return status;
+	return success;
 }
 
-SoupAddress *
-soup_connection_get_tunnel_addr (SoupConnection *conn)
+gboolean
+soup_connection_is_tunnelled (SoupConnection *conn)
 {
 	SoupConnectionPrivate *priv;
-
-	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), NULL);
-	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-
-	return priv->tunnel_addr;
-}
-
-guint
-soup_connection_start_ssl_sync (SoupConnection *conn,
-				GCancellable   *cancellable)
-{
-	SoupConnectionPrivate *priv;
-	const char *server_name;
-	guint status;
 
 	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), FALSE);
 	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
-	server_name = soup_address_get_name (priv->tunnel_addr ?
-					     priv->tunnel_addr :
-					     priv->remote_addr);
-	if (!soup_socket_start_proxy_ssl (priv->socket, server_name,
-					  cancellable))
-		return SOUP_STATUS_SSL_FAILED;
+	return priv->ssl && priv->proxy_uri != NULL;
+}
+
+gboolean
+soup_connection_start_ssl_sync (SoupConnection  *conn,
+				GCancellable    *cancellable,
+				GError         **error)
+{
+	SoupConnectionPrivate *priv;
+
+	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), FALSE);
+	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
 	soup_connection_event (conn, G_SOCKET_CLIENT_TLS_HANDSHAKING, NULL);
-	status = soup_socket_handshake_sync (priv->socket, cancellable);
-	if (status == SOUP_STATUS_OK) {
-#if ENABLE_TIZEN_SPDY
-		SoupSocketNPNType npn = soup_socket_get_npn_type (priv->socket);
-
-		if (npn == SOUP_SOCKET_NPN_SPDY2)
-			priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY2, NULL);
-		else if (npn == SOUP_SOCKET_NPN_SPDY3)
-			priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY3, NULL);
-#endif
+	if (soup_socket_handshake_sync (priv->socket, priv->remote_uri->host,
+					cancellable, error)) {
 		soup_connection_event (conn, G_SOCKET_CLIENT_TLS_HANDSHAKED, NULL);
-	}
-	else if (status == SOUP_STATUS_TLS_FAILED) {
-		priv->ssl_fallback = TRUE;
-		status = SOUP_STATUS_TRY_AGAIN;
-	}
-
-	return status;
+		soup_connection_event (conn, G_SOCKET_CLIENT_COMPLETE, NULL);
+		return TRUE;
+	} else
+		return FALSE;
 }
 
 static void
-start_ssl_completed (SoupSocket *socket, guint status, gpointer user_data)
+start_ssl_completed (GObject *object, GAsyncResult *result, gpointer user_data)
 {
-	SoupConnectionAsyncConnectData *data = user_data;
-	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (data->conn);
+	GTask *task = user_data;
+	SoupConnection *conn = g_task_get_source_object (task);
+	SoupConnectionPrivate *priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+	GError *error = NULL;
 
-	if (status == SOUP_STATUS_OK) {
-#if ENABLE_TIZEN_SPDY
-		SoupSocketNPNType npn = soup_socket_get_npn_type (socket);
+	if (priv->async_context && !priv->use_thread_context)
+		g_main_context_pop_thread_default (priv->async_context);
 
-		if (npn == SOUP_SOCKET_NPN_SPDY2)
-			priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY2, NULL);
-		else if (npn == SOUP_SOCKET_NPN_SPDY3)
-			priv->spdy_conn = soup_connection_spdy_new ("socket", priv->socket, "version", SOUP_CONNECTION_SPDY_VERSION_SPDY3, NULL);
+	if (soup_socket_handshake_finish (priv->socket, result, &error)) {
+		soup_connection_event (conn, G_SOCKET_CLIENT_TLS_HANDSHAKED, NULL);
+		soup_connection_event (conn, G_SOCKET_CLIENT_COMPLETE, NULL);
+		g_task_return_boolean (task, TRUE);
+#if ENABLE(TIZEN_PERFORMANCE_TEST_LOG)
+		prctl_with_url_and_free("[EVT] soup handshake complete : ", soup_uri_to_string(soup_connection_get_remote_uri(conn), FALSE));
 #endif
-		soup_connection_event (data->conn, G_SOCKET_CLIENT_TLS_HANDSHAKED, NULL);
-	} else if (status == SOUP_STATUS_TLS_FAILED) {
-		priv->ssl_fallback = TRUE;
-		status = SOUP_STATUS_TRY_AGAIN;
-	}
-
-	data->callback (data->conn, status, data->callback_data);
-	g_object_unref (data->conn);
-	g_slice_free (SoupConnectionAsyncConnectData, data);
-}
-
-static gboolean
-idle_start_ssl_completed (gpointer user_data)
-{
-	SoupConnectionAsyncConnectData *data = user_data;
-
-	start_ssl_completed (NULL, SOUP_STATUS_SSL_FAILED, data);
-	return FALSE;
+	} else
+		g_task_return_error (task, error);
+	g_object_unref (task);
 }
 
 void
-soup_connection_start_ssl_async (SoupConnection   *conn,
-				 GCancellable     *cancellable,
-				 SoupConnectionCallback callback,
-				 gpointer          user_data)
+soup_connection_start_ssl_async (SoupConnection      *conn,
+				 GCancellable        *cancellable,
+				 GAsyncReadyCallback  callback,
+				 gpointer             user_data)
 {
 	SoupConnectionPrivate *priv;
-	const char *server_name;
-	SoupConnectionAsyncConnectData *data;
-	GMainContext *async_context;
+	GTask *task;
 
 	g_return_if_fail (SOUP_IS_CONNECTION (conn));
 	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
-	data = g_slice_new (SoupConnectionAsyncConnectData);
-	data->conn = g_object_ref (conn);
-	data->callback = callback;
-	data->callback_data = user_data;
-
-	if (priv->use_thread_context)
-		async_context = g_main_context_get_thread_default ();
-	else
-		async_context = priv->async_context;
-
-	server_name = soup_address_get_name (priv->tunnel_addr ?
-					     priv->tunnel_addr :
-					     priv->remote_addr);
-	if (!soup_socket_start_proxy_ssl (priv->socket, server_name,
-					  cancellable)) {
-		soup_add_completion (async_context,
-				     idle_start_ssl_completed, data);
-		return;
-	}
-
 	soup_connection_event (conn, G_SOCKET_CLIENT_TLS_HANDSHAKING, NULL);
-	soup_socket_handshake_async (priv->socket, cancellable,
-				     start_ssl_completed, data);
+
+	if (priv->async_context && !priv->use_thread_context)
+		g_main_context_push_thread_default (priv->async_context);
+	task = g_task_new (conn, cancellable, callback, user_data);
+
+	soup_socket_handshake_async (priv->socket, priv->remote_uri->host,
+				     cancellable, start_ssl_completed, task);
+}
+
+gboolean
+soup_connection_start_ssl_finish (SoupConnection  *conn,
+				  GAsyncResult    *result,
+				  GError         **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 /**
@@ -963,14 +975,9 @@ soup_connection_disconnect (SoupConnection *conn)
 		soup_connection_set_state (conn, SOUP_CONNECTION_DISCONNECTED);
 
 	if (priv->socket) {
-		/* Set the socket to NULL at the beginning to avoid reentrancy
-		 * issues. soup_socket_disconnect() could trigger a reentrant
-		 * call unref'ing and disconnecting the socket twice.
-		 */
 		SoupSocket *socket = priv->socket;
+
 		priv->socket = NULL;
-		g_signal_handlers_disconnect_by_func (socket,
-						      socket_disconnected, conn);
 		soup_socket_disconnect (socket);
 		g_object_unref (socket);
 	}
@@ -985,6 +992,14 @@ soup_connection_get_socket (SoupConnection *conn)
 	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), NULL);
 
 	return SOUP_CONNECTION_GET_PRIVATE (conn)->socket;
+}
+
+SoupURI *
+soup_connection_get_remote_uri (SoupConnection *conn)
+{
+	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), NULL);
+
+	return SOUP_CONNECTION_GET_PRIVATE (conn)->remote_uri;
 }
 
 SoupURI *
@@ -1012,23 +1027,6 @@ soup_connection_get_state (SoupConnection *conn)
 			      SOUP_CONNECTION_DISCONNECTED);
 	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
 
-#if ENABLE_TIZEN_SPDY
-	if (priv->is_spdy_allowed && soup_connection_is_spdy_protocol (conn)) {
-		if (priv->state != SOUP_CONNECTION_REMOTE_DISCONNECTED &&
-				soup_connection_spdy_is_disconnected (priv->spdy_conn)) {
-			TIZEN_LOGD ("conn[%p] spdy_conn[%p] set SOUP_CONNECTION_REMOTE_DISCONNECTED", conn, priv->spdy_conn);
-			soup_connection_set_state (conn, SOUP_CONNECTION_REMOTE_DISCONNECTED);
-		}
-	} else {
-		if (priv->state == SOUP_CONNECTION_IDLE &&
-			g_socket_condition_check (soup_socket_get_gsocket (priv->socket), G_IO_IN))
-			soup_connection_set_state (conn, SOUP_CONNECTION_REMOTE_DISCONNECTED);
-
-		if (priv->state == SOUP_CONNECTION_IDLE &&
-			priv->unused_timeout && priv->unused_timeout < time (NULL))
-			soup_connection_set_state (conn, SOUP_CONNECTION_REMOTE_DISCONNECTED);
-	}
-#else
 	if (priv->state == SOUP_CONNECTION_IDLE &&
 	    g_socket_condition_check (soup_socket_get_gsocket (priv->socket), G_IO_IN))
 		soup_connection_set_state (conn, SOUP_CONNECTION_REMOTE_DISCONNECTED);
@@ -1036,7 +1034,6 @@ soup_connection_get_state (SoupConnection *conn)
 	if (priv->state == SOUP_CONNECTION_IDLE &&
 	    priv->unused_timeout && priv->unused_timeout < time (NULL))
 		soup_connection_set_state (conn, SOUP_CONNECTION_REMOTE_DISCONNECTED);
-#endif
 
 	return priv->state;
 }
@@ -1045,7 +1042,6 @@ void
 soup_connection_set_state (SoupConnection *conn, SoupConnectionState state)
 {
 	SoupConnectionPrivate *priv;
-	SoupConnectionState old_state;
 
 	g_return_if_fail (SOUP_IS_CONNECTION (conn));
 	g_return_if_fail (state >= SOUP_CONNECTION_NEW &&
@@ -1054,17 +1050,28 @@ soup_connection_set_state (SoupConnection *conn, SoupConnectionState state)
 	g_object_freeze_notify (G_OBJECT (conn));
 
 	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-	old_state = priv->state;
-	priv->state = state;
-	if ((state == SOUP_CONNECTION_IDLE ||
-#if ENABLE_TIZEN_SPDY
-			state == SOUP_CONNECTION_REMOTE_DISCONNECTED ||
-#endif
-	     state == SOUP_CONNECTION_DISCONNECTED) &&
-	    old_state == SOUP_CONNECTION_IN_USE)
-		clear_current_item (conn);
 
-	g_object_notify (G_OBJECT (conn), "state");
+	if (priv->current_msg) {
+		g_warn_if_fail (state == SOUP_CONNECTION_IDLE ||
+				state == SOUP_CONNECTION_DISCONNECTED);
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+		clear_current_item (conn);
+#endif
+		clear_current_msg (conn);
+	}
+
+	if (state == SOUP_CONNECTION_IDLE && !priv->reusable) {
+		/* This will recursively call set_state() */
+		soup_connection_disconnect (conn);
+	} else {
+		priv->state = state;
+
+		if (priv->state == SOUP_CONNECTION_IDLE)
+			start_idle_timer (conn);
+
+		g_object_notify (G_OBJECT (conn), "state");
+	}
+
 	g_object_thaw_notify (G_OBJECT (conn));
 }
 
@@ -1093,19 +1100,34 @@ soup_connection_send_request (SoupConnection          *conn,
 	g_return_if_fail (SOUP_IS_CONNECTION (conn));
 	g_return_if_fail (item != NULL);
 	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-	g_return_if_fail (priv->state != SOUP_CONNECTION_NEW && priv->state != SOUP_CONNECTION_DISCONNECTED);
+	g_return_if_fail (priv->state != SOUP_CONNECTION_NEW &&
+			  priv->state != SOUP_CONNECTION_DISCONNECTED);
 
-	if (item != priv->cur_item)
-		set_current_item (conn, item);
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+	set_current_item (conn, item);
+	set_current_msg (conn, item->msg);
+#else
+	if (item->msg != priv->current_msg)
+		set_current_msg (conn, item->msg);
+	else
+		priv->reusable = FALSE;
+#endif
 
 	soup_message_send_request (item, completion_cb, user_data);
 }
 
-#if ENABLE (TIZEN_SOCKET_TIMEDOUT_ERROR)
-gboolean soup_connection_is_timedout_error (SoupConnection *conn)
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+void
+soup_connection_set_pre_connect_idle (SoupConnection *conn)
 {
-        SoupConnectionPrivate *priv ;
-        priv = SOUP_CONNECTION_GET_PRIVATE (conn);
-        return soup_socket_is_timedout_error (priv->socket);
+	SoupConnectionPrivate *priv = NULL;
+
+	g_return_val_if_fail (SOUP_IS_CONNECTION (conn), FALSE);
+	priv = SOUP_CONNECTION_GET_PRIVATE (conn);
+
+	if (priv) {
+		if (priv->state == SOUP_CONNECTION_IN_USE)
+			priv->state = SOUP_CONNECTION_IDLE;
+	}
 }
 #endif

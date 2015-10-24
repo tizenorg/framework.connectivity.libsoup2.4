@@ -22,8 +22,6 @@
 #ifndef SOUP_REQUEST_H
 #define SOUP_REQUEST_H 1
 
-#ifdef LIBSOUP_USE_UNSTABLE_REQUEST_API
-
 #include <gio/gio.h>
 
 #include <libsoup/soup-types.h>
@@ -37,7 +35,6 @@ G_BEGIN_DECLS
 #define SOUP_IS_REQUEST_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((klass), SOUP_TYPE_REQUEST))
 #define SOUP_REQUEST_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj), SOUP_TYPE_REQUEST, SoupRequestClass))
 
-typedef struct _SoupRequest SoupRequest;
 typedef struct _SoupRequestPrivate SoupRequestPrivate;
 typedef struct _SoupRequestClass SoupRequestClass;
 
@@ -71,30 +68,36 @@ struct _SoupRequestClass {
 	const char *   (*get_content_type)   (SoupRequest          *request);
 };
 
+SOUP_AVAILABLE_IN_2_34
 GType soup_request_get_type (void);
 
 #define SOUP_REQUEST_URI     "uri"
 #define SOUP_REQUEST_SESSION "session"
 
+SOUP_AVAILABLE_IN_2_34
 GInputStream *soup_request_send               (SoupRequest          *request,
 					       GCancellable         *cancellable,
 					       GError              **error);
+SOUP_AVAILABLE_IN_2_34
 void          soup_request_send_async         (SoupRequest          *request,
 					       GCancellable         *cancellable,
 					       GAsyncReadyCallback   callback,
 					       gpointer              user_data);
+SOUP_AVAILABLE_IN_2_34
 GInputStream *soup_request_send_finish        (SoupRequest          *request,
 					       GAsyncResult         *result,
 					       GError              **error);
 
+SOUP_AVAILABLE_IN_2_34
 SoupURI      *soup_request_get_uri            (SoupRequest          *request);
+SOUP_AVAILABLE_IN_2_34
 SoupSession  *soup_request_get_session        (SoupRequest          *request);
 
+SOUP_AVAILABLE_IN_2_34
 goffset       soup_request_get_content_length (SoupRequest          *request);
+SOUP_AVAILABLE_IN_2_34
 const char   *soup_request_get_content_type   (SoupRequest          *request);
 
 G_END_DECLS
-
-#endif /* LIBSOUP_USE_UNSTABLE_REQUEST_API */
 
 #endif /* SOUP_REQUEST_H */

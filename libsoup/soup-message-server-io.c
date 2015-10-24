@@ -9,20 +9,17 @@
 #include "config.h"
 #endif
 
-#include <stdlib.h>
 #include <string.h>
 
+#include <glib/gi18n-lib.h>
+
+#include "soup.h"
 #include "soup-message-private.h"
-#include "soup-address.h"
-#include "soup-auth.h"
-#include "soup-headers.h"
-#include "soup-multipart.h"
-#include "soup-server.h"
-#include "soup-socket.h"
+#include "soup-misc-private.h"
 
 static guint
 parse_request_headers (SoupMessage *msg, char *headers, guint headers_len,
-		       SoupEncoding *encoding, gpointer sock)
+		       SoupEncoding *encoding, gpointer sock, GError **error)
 {
 	SoupMessagePrivate *priv = SOUP_MESSAGE_GET_PRIVATE (msg);
 	char *req_method, *req_path, *url;
@@ -36,8 +33,14 @@ parse_request_headers (SoupMessage *msg, char *headers, guint headers_len,
 					     &req_method,
 					     &req_path,
 					     &version);
-	if (!SOUP_STATUS_IS_SUCCESSFUL (status))
+	if (!SOUP_STATUS_IS_SUCCESSFUL (status)) {
+		if (status == SOUP_STATUS_MALFORMED) {
+			g_set_error_literal (error, SOUP_REQUEST_ERROR,
+					     SOUP_REQUEST_ERROR_PARSING,
+					     _("Could not parse HTTP request"));
+		}
 		return status;
+	}
 
 	g_object_set (G_OBJECT (msg),
 		      SOUP_MESSAGE_METHOD, req_method,
@@ -95,10 +98,7 @@ parse_request_headers (SoupMessage *msg, char *headers, guint headers_len,
 
 	g_free (req_path);
 
-	if (!SOUP_URI_VALID_FOR_HTTP (uri)) {
-		/* certainly not "a valid host on the server" (RFC2616 5.2.3)
-		 * SOUP_URI_VALID_FOR_HTTP also guards against uri == NULL
-		 */
+	if (!uri || !uri->host) {
 		if (uri)
 			soup_uri_free (uri);
 		return SOUP_STATUS_BAD_REQUEST;
@@ -116,6 +116,7 @@ handle_partial_get (SoupMessage *msg)
 	SoupRange *ranges;
 	int nranges;
 	SoupBuffer *full_response;
+	guint status;
 
 	/* Make sure the message is set up right for us to return a
 	 * partial response; it has to be a GET, the status must be
@@ -134,9 +135,15 @@ handle_partial_get (SoupMessage *msg)
 	/* Oh, and there has to have been a valid Range header on the
 	 * request, of course.
 	 */
-	if (!soup_message_headers_get_ranges (msg->request_headers,
-					      msg->response_body->length,
-					      &ranges, &nranges))
+	status = soup_message_headers_get_ranges_internal (msg->request_headers,
+							   msg->response_body->length,
+							   TRUE,
+							   &ranges, &nranges);
+	if (status == SOUP_STATUS_REQUESTED_RANGE_NOT_SATISFIABLE) {
+		soup_message_set_status (msg, status);
+		soup_message_body_truncate (msg->response_body);
+		return;
+	} else if (status != SOUP_STATUS_PARTIAL_CONTENT)
 		return;
 
 	full_response = soup_message_body_flatten (msg->response_body);
@@ -248,9 +255,22 @@ soup_message_read_request (SoupMessage               *msg,
 			   SoupMessageCompletionFn    completion_cb,
 			   gpointer                   user_data)
 {
-	soup_message_io_server (msg, sock,
+	GMainContext *async_context;
+	GIOStream *iostream;
+
+	g_object_get (sock,
+		      SOUP_SOCKET_ASYNC_CONTEXT, &async_context,
+		      NULL);
+	if (!async_context)
+		async_context = g_main_context_ref (g_main_context_default ());
+
+	iostream = soup_socket_get_iostream (sock);
+
+	soup_message_io_server (msg, iostream, async_context,
 				get_response_headers,
 				parse_request_headers,
 				sock,
 				completion_cb, user_data);
+	if (async_context)
+		g_main_context_unref (async_context);
 }

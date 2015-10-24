@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "soup-message-body.h"
+#include "soup.h"
 
 /**
  * SECTION:soup-message-body
@@ -308,20 +309,31 @@ soup_buffer_free (SoupBuffer *buffer)
 	}
 }
 
-GType
-soup_buffer_get_type (void)
+/**
+ * soup_buffer_get_as_bytes:
+ * @buffer: a #SoupBuffer
+ *
+ * Creates a #GBytes pointing to the same memory as @buffer. The
+ * #GBytes will hold a reference on @buffer to ensure that it is not
+ * freed while the #GBytes is still valid.
+ *
+ * Returns: (transfer full): a new #GBytes which has the same content
+ * as the #SoupBuffer.
+ *
+ * Since: 2.40
+ */
+GBytes *
+soup_buffer_get_as_bytes (SoupBuffer *buffer)
 {
-	static volatile gsize type_volatile = 0;
+	SoupBuffer *copy;
 
-	if (g_once_init_enter (&type_volatile)) {
-		GType type = g_boxed_type_register_static (
-			g_intern_static_string ("SoupBuffer"),
-			(GBoxedCopyFunc) soup_buffer_copy,
-			(GBoxedFreeFunc) soup_buffer_free);
-		g_once_init_leave (&type_volatile, type);
-	}
-	return type_volatile;
+	copy = soup_buffer_copy (buffer);
+	return g_bytes_new_with_free_func (copy->data, copy->length,
+					   (GDestroyNotify)soup_buffer_free,
+					   copy);
 }
+
+G_DEFINE_BOXED_TYPE (SoupBuffer, soup_buffer, soup_buffer_copy, soup_buffer_free)
 
 
 /**
@@ -407,7 +419,7 @@ soup_message_body_new (void)
  * be discarded, and you will be responsible for recreating the
  * request body after the #SoupMessage::restarted signal is emitted.
  *
- * Since: 2.4.1
+ * Since: 2.24
  **/
 void
 soup_message_body_set_accumulate (SoupMessageBody *body,
@@ -427,7 +439,7 @@ soup_message_body_set_accumulate (SoupMessageBody *body,
  *
  * Return value: the accumulate flag for @body.
  *
- * Since: 2.4.1
+ * Since: 2.24
  **/
 gboolean
 soup_message_body_get_accumulate (SoupMessageBody *body)
@@ -524,11 +536,8 @@ void
 soup_message_body_truncate (SoupMessageBody *body)
 {
 	SoupMessageBodyPrivate *priv = (SoupMessageBodyPrivate *)body;
-	GSList *iter;
 
-	for (iter = priv->chunks; iter; iter = iter->next)
-		soup_buffer_free (iter->data);
-	g_slist_free (priv->chunks);
+	g_slist_free_full (priv->chunks, (GDestroyNotify)soup_buffer_free);
 	priv->chunks = priv->last = NULL;
 	priv->base_offset = 0;
 
@@ -659,7 +668,7 @@ soup_message_body_get_chunk (SoupMessageBody *body, goffset offset)
  * This is a low-level method which you should not normally need to
  * use.
  *
- * Since: 2.4.1
+ * Since: 2.24
  **/
 void
 soup_message_body_got_chunk (SoupMessageBody *body, SoupBuffer *chunk)
@@ -686,7 +695,7 @@ soup_message_body_got_chunk (SoupMessageBody *body, SoupBuffer *chunk)
  * there are further restrictions on its proper use which are not
  * documented here.
  *
- * Since: 2.4.1
+ * Since: 2.24
  **/
 void
 soup_message_body_wrote_chunk (SoupMessageBody *body, SoupBuffer *chunk)
@@ -736,17 +745,4 @@ soup_message_body_free (SoupMessageBody *body)
 	}
 }
 
-GType
-soup_message_body_get_type (void)
-{
-	static volatile gsize type_volatile = 0;
-
-	if (g_once_init_enter (&type_volatile)) {
-		GType type = g_boxed_type_register_static (
-			g_intern_static_string ("SoupMessageBody"),
-			(GBoxedCopyFunc) soup_message_body_copy,
-			(GBoxedFreeFunc) soup_message_body_free);
-		g_once_init_leave (&type_volatile, type);
-	}
-	return type_volatile;
-}
+G_DEFINE_BOXED_TYPE (SoupMessageBody, soup_message_body, soup_message_body_copy, soup_message_body_free)

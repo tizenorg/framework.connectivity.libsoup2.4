@@ -15,6 +15,7 @@ G_BEGIN_DECLS
 #define SOUP_FORM_MIME_TYPE_MULTIPART  "multipart/form-data"
 
 GHashTable  *soup_form_decode           (const char   *encoded_form);
+SOUP_AVAILABLE_IN_2_26
 GHashTable  *soup_form_decode_multipart (SoupMessage  *msg,
 					 const char   *file_control_name,
 					 char        **filename,
@@ -28,7 +29,7 @@ char        *soup_form_encode_datalist  (GData       **form_data_set);
 char        *soup_form_encode_valist    (const char   *first_field,
 					 va_list       args);
 
-#ifndef LIBSOUP_DISABLE_DEPRECATED
+#ifndef SOUP_DISABLE_DEPRECATED
 /* Compatibility with libsoup 2.3.0 */
 #define soup_form_decode_urlencoded      soup_form_decode
 #define soup_form_encode_urlencoded      soup_form_encode_hash
@@ -45,6 +46,7 @@ SoupMessage *soup_form_request_new_from_hash      (const char     *method,
 SoupMessage *soup_form_request_new_from_datalist  (const char     *method,
 						   const char     *uri,
 						   GData         **form_data_set);
+SOUP_AVAILABLE_IN_2_26
 SoupMessage *soup_form_request_new_from_multipart (const char     *uri,
 						   SoupMultipart  *multipart);
 

@@ -9,21 +9,13 @@
 #include <config.h>
 #endif
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "soup-server.h"
-#include "soup-address.h"
-#include "soup-auth-domain.h"
-#include "soup-date.h"
-#include "soup-form.h"
-#include "soup-headers.h"
+#include "soup.h"
 #include "soup-message-private.h"
-#include "soup-marshal.h"
+#include "soup-misc-private.h"
 #include "soup-path-map.h" 
-#include "soup-socket.h"
 
 /**
  * SECTION:soup-server
@@ -114,6 +106,8 @@ typedef struct {
 	GSList            *auth_domains;
 
 	GMainContext      *async_context;
+
+	char             **http_aliases, **https_aliases;
 } SoupServerPrivate;
 #define SOUP_SERVER_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_SERVER, SoupServerPrivate))
 
@@ -130,17 +124,11 @@ enum {
 	PROP_ASYNC_CONTEXT,
 	PROP_RAW_PATHS,
 	PROP_SERVER_HEADER,
+	PROP_HTTP_ALIASES,
+	PROP_HTTPS_ALIASES,
 
 	LAST_PROP
 };
-
-static GObject *constructor (GType                  type,
-			     guint                  n_construct_properties,
-			     GObjectConstructParam *construct_properties);
-static void set_property (GObject *object, guint prop_id,
-			  const GValue *value, GParamSpec *pspec);
-static void get_property (GObject *object, guint prop_id,
-			  GValue *value, GParamSpec *pspec);
 
 static SoupClientContext *soup_client_context_ref (SoupClientContext *client);
 static void soup_client_context_unref (SoupClientContext *client);
@@ -158,27 +146,27 @@ soup_server_init (SoupServer *server)
 	SoupServerPrivate *priv = SOUP_SERVER_GET_PRIVATE (server);
 
 	priv->handlers = soup_path_map_new ((GDestroyNotify)free_handler);
+
+	priv->http_aliases = g_new (char *, 2);
+	priv->http_aliases[0] = (char *)g_intern_string ("*");
+	priv->http_aliases[1] = NULL;
 }
 
 static void
-finalize (GObject *object)
+soup_server_finalize (GObject *object)
 {
 	SoupServer *server = SOUP_SERVER (object);
 	SoupServerPrivate *priv = SOUP_SERVER_GET_PRIVATE (server);
-	GSList *iter;
 
-	if (priv->iface)
-		g_object_unref (priv->iface);
+	g_clear_object (&priv->iface);
 
 	g_free (priv->ssl_cert_file);
 	g_free (priv->ssl_key_file);
-	if (priv->ssl_cert)
-		g_object_unref (priv->ssl_cert);
+	g_clear_object (&priv->ssl_cert);
 
 	g_free (priv->server_header);
 
-	if (priv->listen_sock)
-		g_object_unref (priv->listen_sock);
+	g_clear_object (&priv->listen_sock);
 
 	while (priv->clients) {
 		SoupClientContext *client = priv->clients->data;
@@ -204,20 +192,206 @@ finalize (GObject *object)
 		soup_client_context_unref (client);
 	}
 
-	if (priv->default_handler)
-		free_handler (priv->default_handler);
+	g_clear_pointer (&priv->default_handler, free_handler);
 	soup_path_map_free (priv->handlers);
 
-	for (iter = priv->auth_domains; iter; iter = iter->next)
-		g_object_unref (iter->data);
-	g_slist_free (priv->auth_domains);
+	g_slist_free_full (priv->auth_domains, g_object_unref);
 
-	if (priv->loop)
-		g_main_loop_unref (priv->loop);
-	if (priv->async_context)
-		g_main_context_unref (priv->async_context);
+	g_clear_pointer (&priv->loop, g_main_loop_unref);
+	g_clear_pointer (&priv->async_context, g_main_context_unref);
+
+	g_free (priv->http_aliases);
+	g_free (priv->https_aliases);
 
 	G_OBJECT_CLASS (soup_server_parent_class)->finalize (object);
+}
+
+static GObject *
+soup_server_constructor (GType                  type,
+			 guint                  n_construct_properties,
+			 GObjectConstructParam *construct_properties)
+{
+	GObject *server;
+	SoupServerPrivate *priv;
+
+	server = G_OBJECT_CLASS (soup_server_parent_class)->constructor (
+		type, n_construct_properties, construct_properties);
+	if (!server)
+		return NULL;
+	priv = SOUP_SERVER_GET_PRIVATE (server);
+
+	if (!priv->iface) {
+		priv->iface =
+			soup_address_new_any (SOUP_ADDRESS_FAMILY_IPV4,
+					      priv->port);
+	}
+
+	if (priv->ssl_cert_file && priv->ssl_key_file) {
+		GError *error = NULL;
+
+		if (priv->ssl_cert)
+			g_object_unref (priv->ssl_cert);
+		priv->ssl_cert = g_tls_certificate_new_from_files (priv->ssl_cert_file, priv->ssl_key_file, &error);
+		if (!priv->ssl_cert) {
+			g_warning ("Could not read SSL certificate from '%s': %s",
+				   priv->ssl_cert_file, error->message);
+			g_error_free (error);
+			g_object_unref (server);
+			return NULL;
+		}
+	}
+
+	priv->listen_sock =
+		soup_socket_new (SOUP_SOCKET_LOCAL_ADDRESS, priv->iface,
+				 SOUP_SOCKET_SSL_CREDENTIALS, priv->ssl_cert,
+				 SOUP_SOCKET_ASYNC_CONTEXT, priv->async_context,
+				 NULL);
+	if (!soup_socket_listen (priv->listen_sock)) {
+		g_object_unref (server);
+		return NULL;
+	}
+
+	/* Re-resolve the interface address, in particular in case
+	 * the passed-in address had SOUP_ADDRESS_ANY_PORT.
+	 */
+	g_object_unref (priv->iface);
+	priv->iface = soup_socket_get_local_address (priv->listen_sock);
+	g_object_ref (priv->iface);
+	priv->port = soup_address_get_port (priv->iface);
+
+	return server;
+}
+
+/* priv->http_aliases and priv->https_aliases are stored as arrays of
+ * *interned* strings, so we can't just use g_strdupv() to set them.
+ */
+static void
+set_aliases (char ***variable, char **value)
+{
+	int len, i;
+
+	if (*variable)
+		g_free (*variable);
+
+	if (!value) {
+		*variable = NULL;
+		return;
+	}
+
+	len = g_strv_length (value);
+	*variable = g_new (char *, len + 1);
+	for (i = 0; i < len; i++)
+		(*variable)[i] = (char *)g_intern_string (value[i]);
+	(*variable)[i] = NULL;
+}
+
+static void
+soup_server_set_property (GObject *object, guint prop_id,
+			  const GValue *value, GParamSpec *pspec)
+{
+	SoupServerPrivate *priv = SOUP_SERVER_GET_PRIVATE (object);
+	const char *header;
+
+	switch (prop_id) {
+	case PROP_PORT:
+		priv->port = g_value_get_uint (value);
+		break;
+	case PROP_INTERFACE:
+		if (priv->iface)
+			g_object_unref (priv->iface);
+		priv->iface = g_value_get_object (value);
+		if (priv->iface)
+			g_object_ref (priv->iface);
+		break;
+	case PROP_SSL_CERT_FILE:
+		priv->ssl_cert_file =
+			g_strdup (g_value_get_string (value));
+		break;
+	case PROP_SSL_KEY_FILE:
+		priv->ssl_key_file =
+			g_strdup (g_value_get_string (value));
+		break;
+	case PROP_TLS_CERTIFICATE:
+		if (priv->ssl_cert)
+			g_object_unref (priv->ssl_cert);
+		priv->ssl_cert = g_value_dup_object (value);
+		break;
+	case PROP_ASYNC_CONTEXT:
+		priv->async_context = g_value_get_pointer (value);
+		if (priv->async_context)
+			g_main_context_ref (priv->async_context);
+		break;
+	case PROP_RAW_PATHS:
+		priv->raw_paths = g_value_get_boolean (value);
+		break;
+	case PROP_SERVER_HEADER:
+		g_free (priv->server_header);
+		header = g_value_get_string (value);
+		if (!header)
+			priv->server_header = NULL;
+		else if (!*header) {
+			priv->server_header =
+				g_strdup (SOUP_SERVER_SERVER_HEADER_BASE);
+		} else if (g_str_has_suffix (header, " ")) {
+			priv->server_header =
+				g_strdup_printf ("%s%s", header,
+						 SOUP_SERVER_SERVER_HEADER_BASE);
+		} else
+			priv->server_header = g_strdup (header);
+		break;
+	case PROP_HTTP_ALIASES:
+		set_aliases (&priv->http_aliases, g_value_get_boxed (value));
+		break;
+	case PROP_HTTPS_ALIASES:
+		set_aliases (&priv->https_aliases, g_value_get_boxed (value));
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static void
+soup_server_get_property (GObject *object, guint prop_id,
+			  GValue *value, GParamSpec *pspec)
+{
+	SoupServerPrivate *priv = SOUP_SERVER_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_PORT:
+		g_value_set_uint (value, priv->port);
+		break;
+	case PROP_INTERFACE:
+		g_value_set_object (value, priv->iface);
+		break;
+	case PROP_SSL_CERT_FILE:
+		g_value_set_string (value, priv->ssl_cert_file);
+		break;
+	case PROP_SSL_KEY_FILE:
+		g_value_set_string (value, priv->ssl_key_file);
+		break;
+	case PROP_TLS_CERTIFICATE:
+		g_value_set_object (value, priv->ssl_cert);
+		break;
+	case PROP_ASYNC_CONTEXT:
+		g_value_set_pointer (value, priv->async_context ? g_main_context_ref (priv->async_context) : NULL);
+		break;
+	case PROP_RAW_PATHS:
+		g_value_set_boolean (value, priv->raw_paths);
+		break;
+	case PROP_SERVER_HEADER:
+		g_value_set_string (value, priv->server_header);
+		break;
+	case PROP_HTTP_ALIASES:
+		g_value_set_boxed (value, priv->http_aliases);
+		break;
+	case PROP_HTTPS_ALIASES:
+		g_value_set_boxed (value, priv->https_aliases);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
 }
 
 static void
@@ -228,15 +402,15 @@ soup_server_class_init (SoupServerClass *server_class)
 	g_type_class_add_private (server_class, sizeof (SoupServerPrivate));
 
 	/* virtual method override */
-	object_class->constructor = constructor;
-	object_class->finalize = finalize;
-	object_class->set_property = set_property;
-	object_class->get_property = get_property;
+	object_class->constructor = soup_server_constructor;
+	object_class->finalize = soup_server_finalize;
+	object_class->set_property = soup_server_set_property;
+	object_class->get_property = soup_server_get_property;
 
 	/* signals */
 
 	/**
-	 * SoupServer::request-started
+	 * SoupServer::request-started:
 	 * @server: the server
 	 * @message: the new message
 	 * @client: the client context
@@ -259,13 +433,13 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_started),
 			      NULL, NULL,
-			      _soup_marshal_NONE__OBJECT_POINTER,
+			      NULL,
 			      G_TYPE_NONE, 2, 
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
 
 	/**
-	 * SoupServer::request-read
+	 * SoupServer::request-read:
 	 * @server: the server
 	 * @message: the message
 	 * @client: the client context
@@ -284,13 +458,13 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_read),
 			      NULL, NULL,
-			      _soup_marshal_NONE__OBJECT_POINTER,
+			      NULL,
 			      G_TYPE_NONE, 2,
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
 
 	/**
-	 * SoupServer::request-finished
+	 * SoupServer::request-finished:
 	 * @server: the server
 	 * @message: the message
 	 * @client: the client context
@@ -304,13 +478,13 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_finished),
 			      NULL, NULL,
-			      _soup_marshal_NONE__OBJECT_POINTER,
+			      NULL,
 			      G_TYPE_NONE, 2,
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
 
 	/**
-	 * SoupServer::request-aborted
+	 * SoupServer::request-aborted:
 	 * @server: the server
 	 * @message: the message
 	 * @client: the client context
@@ -333,7 +507,7 @@ soup_server_class_init (SoupServerClass *server_class)
 			      G_SIGNAL_RUN_FIRST,
 			      G_STRUCT_OFFSET (SoupServerClass, request_aborted),
 			      NULL, NULL,
-			      _soup_marshal_NONE__OBJECT_POINTER,
+			      NULL,
 			      G_TYPE_NONE, 2,
 			      SOUP_TYPE_MESSAGE,
 			      SOUP_TYPE_CLIENT_CONTEXT);
@@ -501,159 +675,68 @@ soup_server_class_init (SoupServerClass *server_class)
 				     "Server header",
 				     NULL,
 				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT));
-}
 
-static GObject *
-constructor (GType                  type,
-	     guint                  n_construct_properties,
-	     GObjectConstructParam *construct_properties)
-{
-	GObject *server;
-	SoupServerPrivate *priv;
-
-	server = G_OBJECT_CLASS (soup_server_parent_class)->constructor (
-		type, n_construct_properties, construct_properties);
-	if (!server)
-		return NULL;
-	priv = SOUP_SERVER_GET_PRIVATE (server);
-
-	if (!priv->iface) {
-		priv->iface =
-			soup_address_new_any (SOUP_ADDRESS_FAMILY_IPV4,
-					      priv->port);
-	}
-
-	if (priv->ssl_cert_file && priv->ssl_key_file) {
-		GError *error = NULL;
-
-		if (priv->ssl_cert)
-			g_object_unref (priv->ssl_cert);
-		priv->ssl_cert = g_tls_certificate_new_from_files (priv->ssl_cert_file, priv->ssl_key_file, &error);
-		if (!priv->ssl_cert) {
-			g_warning ("Could not read SSL certificate from '%s': %s",
-				   priv->ssl_cert_file, error->message);
-			g_error_free (error);
-			g_object_unref (server);
-			return NULL;
-		}
-	}
-
-	priv->listen_sock =
-		soup_socket_new (SOUP_SOCKET_LOCAL_ADDRESS, priv->iface,
-				 SOUP_SOCKET_SSL_CREDENTIALS, priv->ssl_cert,
-				 SOUP_SOCKET_ASYNC_CONTEXT, priv->async_context,
-				 NULL);
-	if (!soup_socket_listen (priv->listen_sock)) {
-		g_object_unref (server);
-		return NULL;
-	}
-
-	/* Re-resolve the interface address, in particular in case
-	 * the passed-in address had SOUP_ADDRESS_ANY_PORT.
+	/**
+	 * SoupServer:http-aliases:
+	 *
+	 * A %NULL-terminated array of URI schemes that should be
+	 * considered to be aliases for "http". Eg, if this included
+	 * <literal>"dav"</literal>, than a URI of
+	 * <literal>dav://example.com/path</literal> would be treated
+	 * identically to <literal>http://example.com/path</literal>.
+	 * In particular, this is needed in cases where a client
+	 * sends requests with absolute URIs, where those URIs do
+	 * not use "http:".
+	 *
+	 * The default value is an array containing the single element
+	 * <literal>"*"</literal>, a special value which means that
+	 * any scheme except "https" is considered to be an alias for
+	 * "http".
+	 *
+	 * See also #SoupServer:https-aliases.
+	 *
+	 * Since: 2.44
 	 */
-	g_object_unref (priv->iface);
-	priv->iface = soup_socket_get_local_address (priv->listen_sock);
-	g_object_ref (priv->iface);
-	priv->port = soup_address_get_port (priv->iface);
-
-	return server;
-}
-
-static void
-set_property (GObject *object, guint prop_id,
-	      const GValue *value, GParamSpec *pspec)
-{
-	SoupServerPrivate *priv = SOUP_SERVER_GET_PRIVATE (object);
-	const char *header;
-
-	switch (prop_id) {
-	case PROP_PORT:
-		priv->port = g_value_get_uint (value);
-		break;
-	case PROP_INTERFACE:
-		if (priv->iface)
-			g_object_unref (priv->iface);
-		priv->iface = g_value_get_object (value);
-		if (priv->iface)
-			g_object_ref (priv->iface);
-		break;
-	case PROP_SSL_CERT_FILE:
-		priv->ssl_cert_file =
-			g_strdup (g_value_get_string (value));
-		break;
-	case PROP_SSL_KEY_FILE:
-		priv->ssl_key_file =
-			g_strdup (g_value_get_string (value));
-		break;
-	case PROP_TLS_CERTIFICATE:
-		if (priv->ssl_cert)
-			g_object_unref (priv->ssl_cert);
-		priv->ssl_cert = g_value_dup_object (value);
-		break;
-	case PROP_ASYNC_CONTEXT:
-		priv->async_context = g_value_get_pointer (value);
-		if (priv->async_context)
-			g_main_context_ref (priv->async_context);
-		break;
-	case PROP_RAW_PATHS:
-		priv->raw_paths = g_value_get_boolean (value);
-		break;
-	case PROP_SERVER_HEADER:
-		g_free (priv->server_header);
-		header = g_value_get_string (value);
-		if (!header)
-			priv->server_header = NULL;
-		else if (!*header) {
-			priv->server_header =
-				g_strdup (SOUP_SERVER_SERVER_HEADER_BASE);
-		} else if (g_str_has_suffix (header, " ")) {
-			priv->server_header =
-				g_strdup_printf ("%s%s", header,
-						 SOUP_SERVER_SERVER_HEADER_BASE);
-		} else
-			priv->server_header = g_strdup (header);
-		break;
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
-}
-
-static void
-get_property (GObject *object, guint prop_id,
-	      GValue *value, GParamSpec *pspec)
-{
-	SoupServerPrivate *priv = SOUP_SERVER_GET_PRIVATE (object);
-
-	switch (prop_id) {
-	case PROP_PORT:
-		g_value_set_uint (value, priv->port);
-		break;
-	case PROP_INTERFACE:
-		g_value_set_object (value, priv->iface);
-		break;
-	case PROP_SSL_CERT_FILE:
-		g_value_set_string (value, priv->ssl_cert_file);
-		break;
-	case PROP_SSL_KEY_FILE:
-		g_value_set_string (value, priv->ssl_key_file);
-		break;
-	case PROP_TLS_CERTIFICATE:
-		g_value_set_object (value, priv->ssl_cert);
-		break;
-	case PROP_ASYNC_CONTEXT:
-		g_value_set_pointer (value, priv->async_context ? g_main_context_ref (priv->async_context) : NULL);
-		break;
-	case PROP_RAW_PATHS:
-		g_value_set_boolean (value, priv->raw_paths);
-		break;
-	case PROP_SERVER_HEADER:
-		g_value_set_string (value, priv->server_header);
-		break;
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
+	/**
+	 * SOUP_SERVERI_HTTP_ALIASES:
+	 *
+	 * Alias for the #SoupServer:http-aliases property, qv.
+	 *
+	 * Since: 2.44
+	 */
+	g_object_class_install_property (
+		object_class, PROP_HTTP_ALIASES,
+		g_param_spec_boxed (SOUP_SERVER_HTTP_ALIASES,
+				    "http aliases",
+				    "URI schemes that are considered aliases for 'http'",
+				    G_TYPE_STRV,
+				    G_PARAM_READWRITE));
+	/**
+	 * SoupServer:https-aliases:
+	 *
+	 * A comma-delimited list of URI schemes that should be
+	 * considered to be aliases for "https". See
+	 * #SoupServer:http-aliases for more information.
+	 *
+	 * The default value is %NULL, meaning that no URI schemes
+	 * are considered aliases for "https".
+	 *
+	 * Since: 2.44
+	 */
+	/**
+	 * SOUP_SERVER_HTTPS_ALIASES:
+	 *
+	 * Alias for the #SoupServer:https-aliases property, qv.
+	 *
+	 * Since: 2.44
+	 **/
+	g_object_class_install_property (
+		object_class, PROP_HTTPS_ALIASES,
+		g_param_spec_boxed (SOUP_SERVER_HTTPS_ALIASES,
+				    "https aliases",
+				    "URI schemes that are considered aliases for 'https'",
+				    G_TYPE_STRV,
+				    G_PARAM_READWRITE));
 }
 
 /**
@@ -705,7 +788,8 @@ soup_server_get_port (SoupServer *server)
  *
  * In order for a server to run https, you must set the
  * %SOUP_SERVER_SSL_CERT_FILE and %SOUP_SERVER_SSL_KEY_FILE properties
- * to provide it with an SSL certificate to use.
+ * or %SOUP_SERVER_TLS_CERTIFICATE property to provide it with an SSL
+ * certificate to use.
  *
  * Return value: %TRUE if @server is serving https.
  **/
@@ -717,7 +801,7 @@ soup_server_is_https (SoupServer *server)
 	g_return_val_if_fail (SOUP_IS_SERVER (server), 0);
 	priv = SOUP_SERVER_GET_PRIVATE (server);
 
-	return (priv->ssl_cert_file && priv->ssl_key_file);
+	return priv->ssl_cert != NULL;
 }
 
 /**
@@ -830,7 +914,7 @@ soup_server_get_handler (SoupServer *server, const char *path)
 }
 
 static void
-got_headers (SoupMessage *req, SoupClientContext *client)
+got_headers (SoupMessage *msg, SoupClientContext *client)
 {
 	SoupServer *server = client->server;
 	SoupServerPrivate *priv = SOUP_SERVER_GET_PRIVATE (server);
@@ -842,17 +926,23 @@ got_headers (SoupMessage *req, SoupClientContext *client)
 	gboolean rejected = FALSE;
 	char *auth_user;
 
+	uri = soup_message_get_uri (msg);
+	if ((soup_server_is_https (server) && !soup_uri_is_https (uri, priv->https_aliases)) ||
+	    (!soup_server_is_https (server) && !soup_uri_is_http (uri, priv->http_aliases))) {
+		soup_message_set_status (msg, SOUP_STATUS_BAD_REQUEST);
+		return;
+	}
+
 	if (!priv->raw_paths) {
 		char *decoded_path;
 
-		uri = soup_message_get_uri (req);
 		decoded_path = soup_uri_decode (uri->path);
 
 		if (strstr (decoded_path, "/../") ||
 		    g_str_has_suffix (decoded_path, "/..")) {
 			/* Introducing new ".." segments is not allowed */
 			g_free (decoded_path);
-			soup_message_set_status (req, SOUP_STATUS_BAD_REQUEST);
+			soup_message_set_status (msg, SOUP_STATUS_BAD_REQUEST);
 			return;
 		}
 
@@ -863,7 +953,7 @@ got_headers (SoupMessage *req, SoupClientContext *client)
 	/* Add required response headers */
 	date = soup_date_new_from_now (0);
 	date_string = soup_date_to_string (date, SOUP_DATE_HTTP);
-	soup_message_headers_replace (req->response_headers, "Date",
+	soup_message_headers_replace (msg->response_headers, "Date",
 				      date_string);
 	g_free (date_string);
 	soup_date_free (date);
@@ -876,8 +966,8 @@ got_headers (SoupMessage *req, SoupClientContext *client)
 	for (iter = priv->auth_domains; iter; iter = iter->next) {
 		domain = iter->data;
 
-		if (soup_auth_domain_covers (domain, req)) {
-			auth_user = soup_auth_domain_accepts (domain, req);
+		if (soup_auth_domain_covers (domain, msg)) {
+			auth_user = soup_auth_domain_accepts (domain, msg);
 			if (auth_user) {
 				client->auth_domain = g_object_ref (domain);
 				client->auth_user = auth_user;
@@ -895,27 +985,27 @@ got_headers (SoupMessage *req, SoupClientContext *client)
 	for (iter = priv->auth_domains; iter; iter = iter->next) {
 		domain = iter->data;
 
-		if (soup_auth_domain_covers (domain, req))
-			soup_auth_domain_challenge (domain, req);
+		if (soup_auth_domain_covers (domain, msg))
+			soup_auth_domain_challenge (domain, msg);
 	}
 }
 
 static void
-call_handler (SoupMessage *req, SoupClientContext *client)
+call_handler (SoupMessage *msg, SoupClientContext *client)
 {
 	SoupServer *server = client->server;
 	SoupServerHandler *hand;
 	SoupURI *uri;
 
-	g_signal_emit (server, signals[REQUEST_READ], 0, req, client);
+	g_signal_emit (server, signals[REQUEST_READ], 0, msg, client);
 
-	if (req->status_code != 0)
+	if (msg->status_code != 0)
 		return;
 
-	uri = soup_message_get_uri (req);
+	uri = soup_message_get_uri (msg);
 	hand = soup_server_get_handler (server, uri->path);
 	if (!hand) {
-		soup_message_set_status (req, SOUP_STATUS_NOT_FOUND);
+		soup_message_set_status (msg, SOUP_STATUS_NOT_FOUND);
 		return;
 	}
 
@@ -928,12 +1018,12 @@ call_handler (SoupMessage *req, SoupClientContext *client)
 			form_data_set = NULL;
 
 		/* Call method handler */
-		(*hand->callback) (server, req,
+		(*hand->callback) (server, msg,
 				   uri->path, form_data_set,
 				   client, hand->user_data);
 
 		if (form_data_set)
-			g_hash_table_destroy (form_data_set);
+			g_hash_table_unref (form_data_set);
 	}
 }
 
@@ -963,8 +1053,13 @@ start_request (SoupServer *server, SoupClientContext *client)
 		       msg, client);
 
 	g_object_ref (client->sock);
+
+	if (priv->async_context)
+		g_main_context_push_thread_default (priv->async_context);
 	soup_message_read_request (msg, client->sock,
 				   request_finished, client);
+	if (priv->async_context)
+		g_main_context_pop_thread_default (priv->async_context);
 }
 
 static void
@@ -1146,20 +1241,7 @@ soup_server_get_async_context (SoupServer *server)
  * also be of use in some situations (eg, tracking when multiple
  * requests are made on the same connection).
  **/
-GType
-soup_client_context_get_type (void)
-{
-	static volatile gsize type_volatile = 0;
-
-	if (g_once_init_enter (&type_volatile)) {
-		GType type = g_boxed_type_register_static (
-			g_intern_static_string ("SoupClientContext"),
-			(GBoxedCopyFunc) soup_client_context_ref,
-			(GBoxedFreeFunc) soup_client_context_unref);
-		g_once_init_leave (&type_volatile, type);
-	}
-	return type_volatile;
-}
+G_DEFINE_BOXED_TYPE (SoupClientContext, soup_client_context, soup_client_context_ref, soup_client_context_unref)
 
 /**
  * soup_client_context_get_socket:
@@ -1469,6 +1551,10 @@ soup_server_remove_auth_domain (SoupServer *server, SoupAuthDomain *auth_domain)
  * Pauses I/O on @msg. This can be used when you need to return from
  * the server handler without having the full response ready yet. Use
  * soup_server_unpause_message() to resume I/O.
+ *
+ * This must only be called on #SoupMessages which were created by the
+ * #SoupServer and are currently doing I/O, such as those passed into a
+ * #SoupServerCallback or emitted in a #SoupServer::request-read signal.
  **/
 void
 soup_server_pause_message (SoupServer *server,
@@ -1490,6 +1576,10 @@ soup_server_pause_message (SoupServer *server,
  * chunked response.
  *
  * I/O won't actually resume until you return to the main loop.
+ *
+ * This must only be called on #SoupMessages which were created by the
+ * #SoupServer and are currently doing I/O, such as those passed into a
+ * #SoupServerCallback or emitted in a #SoupServer::request-read signal.
  **/
 void
 soup_server_unpause_message (SoupServer *server,

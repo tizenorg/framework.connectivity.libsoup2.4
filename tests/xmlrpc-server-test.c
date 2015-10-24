@@ -3,21 +3,13 @@
  * Copyright (C) 2008 Red Hat, Inc.
  */
 
-#include "config.h"
-
-#include <stdio.h>
-#include <string.h>
-#include <sys/wait.h>
-
-#include <libsoup/soup.h>
-
 #include "test-utils.h"
+
+static char *uri;
 
 #ifdef G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 #endif
-
-GMainLoop *loop;
 
 static void
 type_error (SoupMessage *msg, GType expected, GValueArray *params, int bad_value)
@@ -188,7 +180,17 @@ do_echo (SoupMessage *msg, GValueArray *params)
 
 	soup_xmlrpc_set_response (msg, G_TYPE_VALUE_ARRAY, out);
 	g_value_array_free (out);
+}
 
+static void
+do_ping (SoupMessage *msg, GValueArray *params)
+{
+	if (params->n_values) {
+		args_error (msg, params, 0);
+		return;
+	}
+
+	soup_xmlrpc_set_response (msg, G_TYPE_STRING, "pong");
 }
 
 static void
@@ -224,6 +226,8 @@ server_callback (SoupServer *server, SoupMessage *msg,
 		do_dateChange (msg, params);
 	else if (!strcmp (method_name, "echo"))
 		do_echo (msg, params);
+	else if (!strcmp (method_name, "ping"))
+		do_ping (msg, params);
 	else {
 		soup_xmlrpc_set_fault (msg, SOUP_XMLRPC_FAULT_SERVER_ERROR_REQUESTED_METHOD_NOT_FOUND,
 				       "Unknown method %s", method_name);
@@ -233,73 +237,64 @@ server_callback (SoupServer *server, SoupMessage *msg,
 	g_value_array_free (params);
 }
 
-static void
-xmlrpc_test_exited (GPid pid, int status, gpointer data)
-{
-	errors = WIFEXITED (status) ? WEXITSTATUS (status) : 1;
-	g_main_loop_quit (loop);
-}
-
 static gboolean
-xmlrpc_test_print (GIOChannel *io, GIOCondition cond, gpointer data)
+run_xmlrpc_test (char **argv,
+		 char **stdout_out,
+		 char **stderr_out,
+		 GError **error)
 {
-	char *line;
-	gsize len;
-	GIOStatus status;
+	gboolean ok;
+	int status;
 
-	if (!(cond & G_IO_IN))
+	argv[0] = g_test_build_filename (G_TEST_BUILT, "xmlrpc-test", NULL);
+	ok = g_spawn_sync (NULL, argv, NULL, 0, NULL, NULL,
+			   stdout_out, stderr_out, &status,
+			   error);
+	g_free (argv[0]);
+
+	if (!ok)
 		return FALSE;
 
-	status = g_io_channel_read_line (io, &line, &len, NULL, NULL);
-	if (status == G_IO_STATUS_NORMAL) {
-		/* Don't print the exit status, just the debug stuff */
-		if (strncmp (line, "xmlrpc-test:", strlen ("xmlrpc-test:")) != 0)
-			printf ("%s", line);
-		g_free (line);
-		return TRUE;
-	} else if (status == G_IO_STATUS_AGAIN)
-		return TRUE;
-	else
-		return FALSE;
+	return g_spawn_check_exit_status (status, error);
 }
 
 static void
-do_xmlrpc_tests (SoupURI *uri)
+do_one_xmlrpc_test (gconstpointer data)
 {
-	char *argv[8];
-	int arg, out;
-	gboolean ok;
-	GPid pid;
+	const char *path = data;
+	char *argv[12];
+	char *stdout_out, *stderr_out;
 	GError *error = NULL;
-	GIOChannel *child_out;
+	int arg;
 
-	argv[0] = "./xmlrpc-test";
-	argv[1] = "-s";
-	argv[2] = "-u";
-	argv[3] = soup_uri_to_string (uri, FALSE);
+	argv[0] = NULL;
+	argv[1] = "-S";
+	argv[2] = "-U";
+	argv[3] = uri;
+	argv[4] = "-q";
+	argv[5] = "-p";
+	argv[6] = (char *) path;
 
 	for (arg = 0; arg < debug_level && arg < 3; arg++)
-		argv[arg + 4] = "-d";
-	argv[arg + 4] = NULL;
+		argv[arg + 7] = "-d";
+	argv[arg + 7] = NULL;
 
-	ok = g_spawn_async_with_pipes (NULL, argv, NULL,
-				       G_SPAWN_DO_NOT_REAP_CHILD,
-				       NULL, NULL, &pid,
-				       NULL, &out, NULL,
-				       &error);
-	g_free (argv[3]);
-
-	if (!ok) {
-		printf ("Could not run xmlrpc-test: %s\n", error->message);
-		errors++;
-		return;
+	run_xmlrpc_test (argv, &stdout_out, &stderr_out, &error);
+	if (stdout_out) {
+		g_print ("%s", stdout_out);
+		g_free (stdout_out);
+	}
+	if (stderr_out) {
+		g_printerr ("%s", stderr_out);
+		g_free (stderr_out);
 	}
 
-	g_child_watch_add (pid, xmlrpc_test_exited, NULL);
-	child_out = g_io_channel_unix_new (out);
-	g_io_add_watch (child_out, G_IO_IN | G_IO_ERR | G_IO_HUP,
-			xmlrpc_test_print, NULL);
-	g_io_channel_unref (child_out);
+	if (   g_error_matches (error, G_SPAWN_EXIT_ERROR, 1)
+	    || g_error_matches (error, G_SPAWN_EXIT_ERROR, 77))
+		g_test_fail ();
+	else
+		g_assert_no_error (error);
+	g_clear_error (&error);
 }
 
 gboolean run_tests = TRUE;
@@ -315,29 +310,61 @@ int
 main (int argc, char **argv)
 {
 	SoupServer *server;
-	SoupURI *uri;
+	int ret;
 
 	test_init (argc, argv, no_test_entry);
 
-	server = soup_test_server_new (FALSE);
+	server = soup_test_server_new (run_tests);
 	soup_server_add_handler (server, "/xmlrpc-server.php",
 				 server_callback, NULL, NULL);
-
-	loop = g_main_loop_new (NULL, TRUE);
+	uri = g_strdup_printf ("http://127.0.0.1:%u/xmlrpc-server.php",
+			       soup_server_get_port (server));
 
 	if (run_tests) {
-		uri = soup_uri_new ("http://127.0.0.1/xmlrpc-server.php");
-		soup_uri_set_port (uri, soup_server_get_port (server));
-		do_xmlrpc_tests (uri);
-		soup_uri_free (uri);
-	} else
-		printf ("Listening on port %d\n", soup_server_get_port (server));
+		char *out, **tests, *path;
+		char *list_argv[4];
+		GError *error = NULL;
+		int i;
 
-	g_main_loop_run (loop);
-	g_main_loop_unref (loop);
+		list_argv[0] = NULL;
+		list_argv[1] = "-S";
+		list_argv[2] = "-l";
+		list_argv[3] = NULL;
+
+		if (!run_xmlrpc_test (list_argv, &out, NULL, &error)) {
+			g_printerr ("'xmlrpc-test -l' failed: %s\n", error->message);
+			g_error_free (error);
+			return 1;
+		}
+
+		tests = g_strsplit (out, "\n", -1);
+		g_free (out);
+
+		for (i = 0; tests[i] && *tests[i]; i++) {
+			g_assert_true (g_str_has_prefix (tests[i], "/xmlrpc/"));
+			path = g_strdup_printf ("/xmlrpc-server/%s", tests[i] + strlen ("/xmlrpc/"));
+			g_test_add_data_func (path, tests[i], do_one_xmlrpc_test);
+			g_free (path);
+		}
+
+		ret = g_test_run ();
+
+		g_strfreev (tests);
+	} else {
+		GMainLoop *loop;
+
+		g_print ("Listening on port %d\n", soup_server_get_port (server));
+
+		loop = g_main_loop_new (NULL, TRUE);
+		g_main_loop_run (loop);
+		g_main_loop_unref (loop);
+
+		ret = 0;
+	}
 
 	soup_test_server_quit_unref (server);
+	g_free (uri);
 	if (run_tests)
 		test_cleanup ();
-	return errors != 0;
+	return ret;
 }

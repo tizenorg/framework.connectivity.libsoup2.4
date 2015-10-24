@@ -1,0 +1,6 @@
+.bbc.:/opt/down/cert/deviceCert_bbc.pem:/opt/down/cert/keyTV_bbc_p.pem,
+vision.bt.com:/opt/down/cert/SamsungDeviceCertificate.pem:/opt/down/cert/SamsungDeviceCertificateKey.pem,
+samsungcloudsolution.net:/opt/down/cert/SamsungDeviceCertificate.pem:/opt/down/cert/SamsungDeviceCertificateKey.pem,
+samsungcloudsolution.com:/opt/down/cert/SamsungDeviceCertificate.pem:/opt/down/cert/SamsungDeviceCertificateKey.pem,
+amazon.com:/opt/down/cert/SAMSUNGHAWAII.pem:/opt/down/cert/SAMSUNGHAWAIIkey.pem,
+168.219.241.109:/opt/down/cert/SamsungDeviceCertificate.pem:/opt/down/cert/SamsungDeviceCertificateKey.pem,

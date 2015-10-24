@@ -8,7 +8,6 @@
 
 #include <sys/types.h>
 
-#include <libsoup/soup-portability.h>
 #include <libsoup/soup-types.h>
 
 G_BEGIN_DECLS
@@ -38,6 +37,7 @@ typedef struct {
 #define SOUP_ADDRESS_NAME     "name"
 #define SOUP_ADDRESS_FAMILY   "family"
 #define SOUP_ADDRESS_PORT     "port"
+#define SOUP_ADDRESS_PROTOCOL "protocol"
 #define SOUP_ADDRESS_PHYSICAL "physical"
 #define SOUP_ADDRESS_SOCKADDR "sockaddr"
 
@@ -49,6 +49,8 @@ typedef enum {
 } SoupAddressFamily;
 
 #define SOUP_ADDRESS_ANY_PORT 0
+
+struct sockaddr;
 
 typedef void   (*SoupAddressCallback)            (SoupAddress         *addr,
 						  guint                status,
@@ -76,13 +78,18 @@ const char      *soup_address_get_physical       (SoupAddress         *addr);
 guint            soup_address_get_port           (SoupAddress         *addr);
 struct sockaddr *soup_address_get_sockaddr       (SoupAddress         *addr,
 						  int                 *len);
+SOUP_AVAILABLE_IN_2_32
 GSocketAddress  *soup_address_get_gsockaddr      (SoupAddress         *addr);
 gboolean         soup_address_is_resolved        (SoupAddress         *addr);
 
+SOUP_AVAILABLE_IN_2_26
 guint            soup_address_hash_by_name       (gconstpointer        addr);
+SOUP_AVAILABLE_IN_2_26
 gboolean         soup_address_equal_by_name      (gconstpointer        addr1,
 						  gconstpointer        addr2);
+SOUP_AVAILABLE_IN_2_26
 guint            soup_address_hash_by_ip         (gconstpointer        addr);
+SOUP_AVAILABLE_IN_2_26
 gboolean         soup_address_equal_by_ip        (gconstpointer        addr1,
 						  gconstpointer        addr2);
 

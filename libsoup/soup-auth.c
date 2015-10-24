@@ -9,16 +9,11 @@
 #include <config.h>
 #endif
 
-#define LIBSOUP_I_HAVE_READ_BUG_594377_AND_KNOW_SOUP_PASSWORD_MANAGER_MIGHT_GO_AWAY
-
 #include <string.h>
 
 #include "soup-auth.h"
-#include "soup-auth-basic.h"
-#include "soup-auth-digest.h"
-#include "soup-headers.h"
-#include "soup-marshal.h"
-#include "soup-uri.h"
+#include "soup.h"
+#include "soup-connection-auth.h"
 
 /**
  * SECTION:soup-auth
@@ -42,19 +37,10 @@
 typedef struct {
 	gboolean proxy;
 	char *host;
-
-	GHashTable *saved_passwords;
 } SoupAuthPrivate;
 #define SOUP_AUTH_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), SOUP_TYPE_AUTH, SoupAuthPrivate))
 
 G_DEFINE_ABSTRACT_TYPE (SoupAuth, soup_auth, G_TYPE_OBJECT)
-
-enum {
-	SAVE_PASSWORD,
-	LAST_SIGNAL
-};
-
-static guint signals[LAST_SIGNAL] = { 0 };
 
 enum {
 	PROP_0,
@@ -68,24 +54,79 @@ enum {
 	LAST_PROP
 };
 
-static void set_property (GObject *object, guint prop_id,
-			  const GValue *value, GParamSpec *pspec);
-static void get_property (GObject *object, guint prop_id,
-			  GValue *value, GParamSpec *pspec);
+static void
+soup_auth_init (SoupAuth *auth)
+{
+}
 
 static void
-finalize (GObject *object)
+soup_auth_finalize (GObject *object)
 {
 	SoupAuth *auth = SOUP_AUTH (object);
 	SoupAuthPrivate *priv = SOUP_AUTH_GET_PRIVATE (auth);
 
 	g_free (auth->realm);
 	g_free (priv->host);
-	if (priv->saved_passwords)
-		g_hash_table_destroy (priv->saved_passwords);
 
 	G_OBJECT_CLASS (soup_auth_parent_class)->finalize (object);
 }
+
+static void
+soup_auth_set_property (GObject *object, guint prop_id,
+			const GValue *value, GParamSpec *pspec)
+{
+	SoupAuth *auth = SOUP_AUTH (object);
+	SoupAuthPrivate *priv = SOUP_AUTH_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_REALM:
+		auth->realm = g_value_dup_string (value);
+		break;
+	case PROP_HOST:
+		priv->host = g_value_dup_string (value);
+		break;
+	case PROP_IS_FOR_PROXY:
+		priv->proxy = g_value_get_boolean (value);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
+static void
+soup_auth_get_property (GObject *object, guint prop_id,
+			GValue *value, GParamSpec *pspec)
+{
+	SoupAuth *auth = SOUP_AUTH (object);
+	SoupAuthPrivate *priv = SOUP_AUTH_GET_PRIVATE (object);
+
+	switch (prop_id) {
+	case PROP_SCHEME_NAME:
+		g_value_set_string (value, soup_auth_get_scheme_name (auth));
+		break;
+	case PROP_REALM:
+		if (auth->realm)
+			g_free (auth->realm);
+		g_value_set_string (value, soup_auth_get_realm (auth));
+		break;
+	case PROP_HOST:
+		if (priv->host)
+			g_free (priv->host);
+		g_value_set_string (value, soup_auth_get_host (auth));
+		break;
+	case PROP_IS_FOR_PROXY:
+		g_value_set_boolean (value, priv->proxy);
+		break;
+	case PROP_IS_AUTHENTICATED:
+		g_value_set_boolean (value, soup_auth_is_authenticated (auth));
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+		break;
+	}
+}
+
 
 static void
 soup_auth_class_init (SoupAuthClass *auth_class)
@@ -94,33 +135,9 @@ soup_auth_class_init (SoupAuthClass *auth_class)
 
 	g_type_class_add_private (auth_class, sizeof (SoupAuthPrivate));
 
-	object_class->finalize = finalize;
-	object_class->set_property = set_property;
-	object_class->get_property = get_property;
-
-	/**
-	 * SoupAuth::save-password:
-	 * @auth: the auth
-	 * @username: the username to save
-	 * @password: the password to save
-	 *
-	 * Emitted to request that the @username/@password pair be
-	 * saved. If the session supports password-saving, it will
-	 * connect to this signal before emitting
-	 * #SoupSession::authenticate, so that it record the password
-	 * if requested by the caller.
-	 *
-	 * Since: 2.28
-	 **/
-	signals[SAVE_PASSWORD] =
-		g_signal_new ("save-password",
-			      G_OBJECT_CLASS_TYPE (object_class),
-			      G_SIGNAL_RUN_FIRST,
-			      0, NULL, NULL,
-			      _soup_marshal_NONE__STRING_STRING,
-			      G_TYPE_NONE, 2,
-			      G_TYPE_STRING,
-			      G_TYPE_STRING);
+	object_class->finalize     = soup_auth_finalize;
+	object_class->set_property = soup_auth_set_property;
+	object_class->get_property = soup_auth_get_property;
 
 	/* properties */
 	/**
@@ -148,7 +165,7 @@ soup_auth_class_init (SoupAuthClass *auth_class)
 				     "Realm",
 				     "Authentication realm",
 				     NULL,
-				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+				     G_PARAM_READWRITE));
 	/**
 	 * SOUP_AUTH_HOST:
 	 *
@@ -161,7 +178,7 @@ soup_auth_class_init (SoupAuthClass *auth_class)
 				     "Host",
 				     "Authentication host",
 				     NULL,
-				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+				     G_PARAM_READWRITE));
 	/**
 	 * SOUP_AUTH_IS_FOR_PROXY:
 	 *
@@ -174,7 +191,7 @@ soup_auth_class_init (SoupAuthClass *auth_class)
 				      "For Proxy",
 				      "Whether or not the auth is for a proxy server",
 				      FALSE,
-				      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+				      G_PARAM_READWRITE));
 	/**
 	 * SOUP_AUTH_IS_AUTHENTICATED:
 	 *
@@ -188,63 +205,6 @@ soup_auth_class_init (SoupAuthClass *auth_class)
 				      "Whether or not the auth is authenticated",
 				      FALSE,
 				      G_PARAM_READABLE));
-}
-
-static void
-soup_auth_init (SoupAuth *auth)
-{
-}
-
-static void
-set_property (GObject *object, guint prop_id,
-	      const GValue *value, GParamSpec *pspec)
-{
-	SoupAuth *auth = SOUP_AUTH (object);
-	SoupAuthPrivate *priv = SOUP_AUTH_GET_PRIVATE (object);
-
-	switch (prop_id) {
-	case PROP_REALM:
-		auth->realm = g_value_dup_string (value);
-		break;
-	case PROP_HOST:
-		priv->host = g_value_dup_string (value);
-		break;
-	case PROP_IS_FOR_PROXY:
-		priv->proxy = g_value_get_boolean (value);
-		break;
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
-}
-
-static void
-get_property (GObject *object, guint prop_id,
-	      GValue *value, GParamSpec *pspec)
-{
-	SoupAuth *auth = SOUP_AUTH (object);
-	SoupAuthPrivate *priv = SOUP_AUTH_GET_PRIVATE (object);
-
-	switch (prop_id) {
-	case PROP_SCHEME_NAME:
-		g_value_set_string (value, soup_auth_get_scheme_name (auth));
-		break;
-	case PROP_REALM:
-		g_value_set_string (value, soup_auth_get_realm (auth));
-		break;
-	case PROP_HOST:
-		g_value_set_string (value, soup_auth_get_host (auth));
-		break;
-	case PROP_IS_FOR_PROXY:
-		g_value_set_boolean (value, priv->proxy);
-		break;
-	case PROP_IS_AUTHENTICATED:
-		g_value_set_boolean (value, soup_auth_is_authenticated (auth));
-		break;
-	default:
-		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-		break;
-	}
 }
 
 /**
@@ -285,19 +245,12 @@ soup_auth_new (GType type, SoupMessage *msg, const char *auth_header)
 	}
 
 	params = soup_header_parse_param_list (auth_header + strlen (scheme));
-	if (!params) {
-		g_object_unref (auth);
-		return NULL;
-	}
+	if (!params)
+		params = g_hash_table_new (NULL, NULL);
 
 	realm = g_hash_table_lookup (params, "realm");
-	if (!realm) {
-		soup_header_free_param_list (params);
-		g_object_unref (auth);
-		return NULL;
-	}
-
-	auth->realm = g_strdup (realm);
+	if (realm)
+		auth->realm = g_strdup (realm);
 
 	if (!SOUP_AUTH_GET_CLASS (auth)->update (auth, msg, params)) {
 		g_object_unref (auth);
@@ -338,10 +291,10 @@ soup_auth_update (SoupAuth *auth, SoupMessage *msg, const char *auth_header)
 
 	params = soup_header_parse_param_list (auth_header + strlen (scheme));
 	if (!params)
-		return FALSE;
+		params = g_hash_table_new (NULL, NULL);
 
 	realm = g_hash_table_lookup (params, "realm");
-	if (!realm || strcmp (realm, auth->realm) != 0) {
+	if (realm && auth->realm && strcmp (realm, auth->realm) != 0) {
 		soup_header_free_param_list (params);
 		return FALSE;
 	}
@@ -362,9 +315,6 @@ soup_auth_update (SoupAuth *auth, SoupMessage *msg, const char *auth_header)
  *
  * Call this on an auth to authenticate it; normally this will cause
  * the auth's message to be requeued with the new authentication info.
- *
- * This does not cause the password to be saved to persistent storage;
- * see soup_auth_save_password() for that.
  **/
 void
 soup_auth_authenticate (SoupAuth *auth, const char *username, const char *password)
@@ -466,9 +416,13 @@ soup_auth_get_info (SoupAuth *auth)
 {
 	g_return_val_if_fail (SOUP_IS_AUTH (auth), NULL);
 
-	return g_strdup_printf ("%s:%s",
-				SOUP_AUTH_GET_CLASS (auth)->scheme_name,
-				auth->realm);
+	if (SOUP_IS_CONNECTION_AUTH (auth))
+		return g_strdup (SOUP_AUTH_GET_CLASS (auth)->scheme_name);
+	else {
+		return g_strdup_printf ("%s:%s",
+					SOUP_AUTH_GET_CLASS (auth)->scheme_name,
+					auth->realm);
+	}
 }
 
 /**
@@ -508,6 +462,33 @@ soup_auth_get_authorization (SoupAuth *auth, SoupMessage *msg)
 }
 
 /**
+ * soup_auth_is_ready:
+ * @auth: a #SoupAuth
+ * @msg: a #SoupMessage
+ *
+ * Tests if @auth is ready to make a request for @msg with. For most
+ * auths, this is equivalent to soup_auth_is_authenticated(), but for
+ * some auth types (eg, NTLM), the auth may be sendable (eg, as an
+ * authentication request) even before it is authenticated.
+ *
+ * Return value: %TRUE if @auth is ready to make a request with.
+ *
+ * Since: 2.42
+ **/
+gboolean
+soup_auth_is_ready (SoupAuth    *auth,
+		    SoupMessage *msg)
+{
+	g_return_val_if_fail (SOUP_IS_AUTH (auth), TRUE);
+	g_return_val_if_fail (SOUP_IS_MESSAGE (msg), TRUE);
+
+	if (SOUP_AUTH_GET_CLASS (auth)->is_ready)
+		return SOUP_AUTH_GET_CLASS (auth)->is_ready (auth, msg);
+	else
+		return SOUP_AUTH_GET_CLASS (auth)->is_authenticated (auth);
+}
+
+/**
  * soup_auth_get_protection_space:
  * @auth: a #SoupAuth
  * @source_uri: the URI of the request that @auth was generated in
@@ -540,143 +521,34 @@ soup_auth_get_protection_space (SoupAuth *auth, SoupURI *source_uri)
 void
 soup_auth_free_protection_space (SoupAuth *auth, GSList *space)
 {
-	GSList *s;
-
-	for (s = space; s; s = s->next)
-		g_free (s->data);
-	g_slist_free (space);
+	g_slist_free_full (space, g_free);
 }
 
 /**
  * soup_auth_get_saved_users:
- * @auth: a #SoupAuth
  *
- * Gets a list of usernames for which a saved password is available.
- * (If the session is not configured to save passwords, this will
- * always be %NULL.)
- *
- * Return value: (transfer container): the list of usernames. You must
- * free the list with g_slist_free(), but do not free or modify the
- * contents.
- *
- * Since: 2.28
- **/
+ * Return value: (transfer full) (element-type utf8):
+ */
 GSList *
 soup_auth_get_saved_users (SoupAuth *auth)
 {
-	SoupAuthPrivate *priv;
-	GSList *users;
-
-	g_return_val_if_fail (SOUP_IS_AUTH (auth), NULL);
-
-	priv = SOUP_AUTH_GET_PRIVATE (auth);
-	users = NULL;
-
-	if (priv->saved_passwords) {
-		GHashTableIter iter;
-		gpointer key, value;
-
-		g_hash_table_iter_init (&iter, priv->saved_passwords);
-		while (g_hash_table_iter_next (&iter, &key, &value))
-			users = g_slist_prepend (users, key);
-	}
-	return users;
+	return NULL;
 }
 
-/**
- * soup_auth_get_saved_password:
- * @auth: a #SoupAuth
- * @user: a username from the list returned from
- * soup_auth_get_saved_users().
- *
- * Given a username for which @auth has a saved password, this returns
- * that password. If @auth doesn't have a passwords saved for @user, it
- * returns %NULL.
- *
- * Return value: the saved password, or %NULL.
- *
- * Since: 2.28
- **/
 const char *
 soup_auth_get_saved_password (SoupAuth *auth, const char *user)
 {
-	SoupAuthPrivate *priv;
-
-	g_return_val_if_fail (SOUP_IS_AUTH (auth), NULL);
-	g_return_val_if_fail (user != NULL, NULL);
-
-	priv = SOUP_AUTH_GET_PRIVATE (auth);
-	if (!priv->saved_passwords)
-		return NULL;
-	return g_hash_table_lookup (priv->saved_passwords, user);
+	return NULL;
 }
 
-static void
-free_password (gpointer password)
-{
-	memset (password, 0, strlen (password));
-	g_free (password);
-}
-
-static inline void
-init_saved_passwords (SoupAuthPrivate *priv)
-{
-	priv->saved_passwords = g_hash_table_new_full (
-		g_str_hash, g_str_equal, g_free, free_password);
-}
-
-/**
- * soup_auth_has_saved_password:
- * @auth: a #SoupAuth
- * @username: a username
- * @password: a password
- *
- * Updates @auth to be aware of an already-saved username/password
- * combination. This method <emphasis>does not</emphasis> cause the
- * given @username and @password to be saved; use
- * soup_auth_save_password() for that. (soup_auth_has_saved_password()
- * is an internal method, which is used by the code that actually
- * saves and restores the passwords.)
- *
- * Since: 2.28
- **/
 void
 soup_auth_has_saved_password (SoupAuth *auth, const char *username,
 			      const char *password)
 {
-	SoupAuthPrivate *priv;
-
-	g_return_if_fail (SOUP_IS_AUTH (auth));
-	g_return_if_fail (username != NULL);
-	g_return_if_fail (password != NULL);
-
-	priv = SOUP_AUTH_GET_PRIVATE (auth);
-
-	if (!priv->saved_passwords)
-		init_saved_passwords (priv);
-	g_hash_table_insert (priv->saved_passwords,
-			     g_strdup (username), g_strdup (password));
 }
 
-/**
- * soup_auth_save_password:
- * @auth: a #SoupAuth
- * @username: the username provided by the user or client
- * @password: the password provided by the user or client
- *
- * Requests that the username/password pair be saved to whatever form
- * of persistent password storage the session supports.
- *
- * Since: 2.28
- **/
 void
 soup_auth_save_password (SoupAuth *auth, const char *username,
 			 const char *password)
 {
-	g_return_if_fail (SOUP_IS_AUTH (auth));
-	g_return_if_fail (username != NULL);
-	g_return_if_fail (password != NULL);
-
-	g_signal_emit (auth, signals[SAVE_PASSWORD], 0,
-		       username, password);
 }

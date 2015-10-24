@@ -1,0 +1,37 @@
+* Tue Jul 23 2013 Joone Hur <joone.hur@intel.com> accepted/tizen/20130711.235221@c1ae001
+- Add the authenticate signal to SoupMessage
+
+* Thu Jul 11 2013 Joone Hur <joone.hur@intel.com> accepted/tizen/20130710.215731@8002bd7
+- Add glib-networking to the libsoup dependency requirements.
+
+* Sun May 19 2013 Rusty Lynch <rusty.lynch@intel.com> submit/tizen/20130517.023122@e301db1
+- Add SOUP_SESSION_CERTIFICATE_PATH support
+
+* Fri Apr 26 2013 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_42_2@a5d8b6d
+- Update to 2.42.2
+
+* Tue Mar 26 2013 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_42_0@ceb3e0d
+- Update to 2.42.0
+
+* Fri Mar 22 2013 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_41_92@24167a1
+- Update to 2.41.92
+
+* Fri Mar 15 2013 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_41_91@00e7f6b
+- Update: 2.41.91
+
+* Tue Feb 26 2013 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_41_90@7735141
+- update to 2.41.90
+
+* Fri Feb 08 2013 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_41_5@b9a2143
+- Update to 2.41.5
+
+* Thu Dec 20 2012 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_41_2@ae24d52
+- require glib-2.0 >= 2.35.0
+- update to 2.41.2
+
+* Fri Nov 30 2012 Anas Nashif <anas.nashif@intel.com> LIBSOUP_2_40_1@38c7716
+- add missing slash in %configure
+
+* Fri Nov 30 2012 Anas Nashif <anas.nashif@intel.com> SOUP_0_4@fda940a
+- Make gnome support conditional
+

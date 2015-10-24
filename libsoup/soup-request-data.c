@@ -25,15 +25,19 @@
 #include <config.h>
 #endif
 
-#define LIBSOUP_USE_UNSTABLE_REQUEST_API
+#include <string.h>
 
 #include "soup-request-data.h"
-
-#include "soup-requester.h"
+#include "soup.h"
 #include "soup-misc-private.h"
-#include <libsoup/soup.h>
-#include <glib/gi18n.h>
 #include "TIZEN.h"
+
+/**
+ * SECTION:soup-request-data
+ * @short_description: SoupRequest support for "data" URIs
+ *
+ * #SoupRequestData implements #SoupRequest for "data" URIs.
+ */
 
 G_DEFINE_TYPE (SoupRequestData, soup_request_data, SOUP_TYPE_REQUEST)
 
@@ -97,7 +101,7 @@ soup_request_data_send (SoupRequest   *request,
 			end = comma;
 
 		if (end != start)
-			data->priv->content_type = uri_decoded_copy (start, end - start);
+			data->priv->content_type = soup_uri_decoded_copy (start, end - start, NULL);
 	}
 
 	memstream = g_memory_input_stream_new ();
@@ -106,12 +110,14 @@ soup_request_data_send (SoupRequest   *request,
 		start = comma + 1;
 
 	if (*start) {
-		guchar *buf = (guchar *) soup_uri_decode (start);
+		int decoded_length = 0;
+		guchar *buf = (guchar *) soup_uri_decoded_copy (start, strlen (start),
+								&decoded_length);
 
 		if (base64)
 			buf = g_base64_decode_inplace ((gchar*) buf, &data->priv->content_length);
 		else
-			data->priv->content_length = strlen ((const char *) buf);
+			data->priv->content_length = decoded_length;
 
 		g_memory_input_stream_add_data (G_MEMORY_INPUT_STREAM (memstream),
 						buf, data->priv->content_length,

@@ -11,8 +11,7 @@
 #endif
 
 #include "soup-message-queue.h"
-#include "soup-uri.h"
-#include "TIZEN.h"
+#include "soup.h"
 
 /* This is an internal structure used by #SoupSession and its
  * subclasses to keep track of the status of messages currently being
@@ -59,28 +58,7 @@ queue_message_restarted (SoupMessage *msg, gpointer user_data)
 {
 	SoupMessageQueueItem *item = user_data;
 
-	if (item->proxy_addr) {
-		g_object_unref (item->proxy_addr);
-		item->proxy_addr = NULL;
-	}
-	if (item->proxy_uri) {
-		soup_uri_free (item->proxy_uri);
-		item->proxy_uri = NULL;
-	}
-
-	if (item->conn &&
-	    (!soup_message_is_keepalive (msg) ||
-	     SOUP_STATUS_IS_REDIRECTION (msg->status_code))) {
-		if (soup_connection_get_state (item->conn) == SOUP_CONNECTION_IN_USE)
-			soup_connection_set_state (item->conn, SOUP_CONNECTION_IDLE);
-		soup_message_queue_item_set_connection (item, NULL);
-	}
-
-	soup_message_cleanup_response (msg);
-
 	g_cancellable_reset (item->cancellable);
-
-	item->state = SOUP_MESSAGE_STARTING;
 }
 
 /**
@@ -102,13 +80,16 @@ soup_message_queue_append (SoupMessageQueue *queue, SoupMessage *msg,
 	SoupMessageQueueItem *item;
 
 	item = g_slice_new0 (SoupMessageQueueItem);
-	item->session = queue->session;
+	item->session = g_object_ref (queue->session);
 	item->async_context = soup_session_get_async_context (item->session);
+	if (item->async_context)
+		g_main_context_ref (item->async_context);
 	item->queue = queue;
 	item->msg = g_object_ref (msg);
 	item->callback = callback;
 	item->callback_data = user_data;
 	item->cancellable = g_cancellable_new ();
+	item->priority = soup_message_get_priority (msg);
 
 	g_signal_connect (msg, "restarted",
 			  G_CALLBACK (queue_message_restarted), item);
@@ -121,9 +102,27 @@ soup_message_queue_append (SoupMessageQueue *queue, SoupMessage *msg,
 
 	g_mutex_lock (&queue->mutex);
 	if (queue->head) {
-		queue->tail->next = item;
-		item->prev = queue->tail;
-		queue->tail = item;
+		SoupMessageQueueItem *it = queue->head;
+
+		while (it && it->priority >= item->priority)
+			it = it->next;
+
+		if (!it) {
+			if (queue->tail) {
+				queue->tail->next = item;
+				item->prev = queue->tail;
+			} else
+				queue->head = item;
+			queue->tail = item;
+		} else {
+			if (it != queue->head)
+				it->prev->next = item;
+			else
+				queue->head = item;
+			item->prev = it->prev;
+			it->prev = item;
+			item->next = it;
+		}
 	} else
 		queue->head = queue->tail = item;
 
@@ -154,28 +153,6 @@ soup_message_queue_item_ref (SoupMessageQueueItem *item)
 void
 soup_message_queue_item_unref (SoupMessageQueueItem *item)
 {
-#ifdef ENABLE_TIZEN_ADD_NULL_CHECK_ON_QUEUE_ITEM
-	if (!item) {
-		TIZEN_LOGE ("item is NULL");
-		return;
-	}
-
-	if (!item->session) {
-		TIZEN_LOGE ("item[%p] item->session is NULL, item->msg[%p]", item, item->msg);
-		return;
-	}
-
-	if (!item->queue) {
-		TIZEN_LOGE ("item[%p] item->queue is NULL, item->session[%p] item->msg[%p]", item, item->session, item->msg);
-		return;
-	}
-
-	if (!item->msg) {
-		TIZEN_LOGE ("item[%p] item->msg is NULL, item->session[%p]", item, item->session);
-		return;
-	}
-#endif
-
 	g_mutex_lock (&item->queue->mutex);
 
 	/* Decrement the ref_count; if it's still non-zero OR if the
@@ -185,6 +162,8 @@ soup_message_queue_item_unref (SoupMessageQueueItem *item)
 		g_mutex_unlock (&item->queue->mutex);
 		return;
 	}
+
+	g_warn_if_fail (item->conn == NULL);
 
 	/* OK, @item is dead. Rewrite @queue around it */
 	if (item->prev)
@@ -201,43 +180,17 @@ soup_message_queue_item_unref (SoupMessageQueueItem *item)
 	/* And free it */
 	g_signal_handlers_disconnect_by_func (item->msg,
 					      queue_message_restarted, item);
+	g_object_unref (item->session);
 	g_object_unref (item->msg);
 	g_object_unref (item->cancellable);
-	if (item->proxy_addr)
-		g_object_unref (item->proxy_addr);
-	if (item->proxy_uri)
-		soup_uri_free (item->proxy_uri);
-	soup_message_queue_item_set_connection (item, NULL);
+	g_clear_error (&item->error);
+	g_clear_object (&item->task);
+	g_clear_pointer (&item->async_context, g_main_context_unref);
+	if (item->io_source) {
+		g_source_destroy (item->io_source);
+		g_source_unref (item->io_source);
+	}
 	g_slice_free (SoupMessageQueueItem, item);
-}
-
-static void
-proxy_connection_event (SoupConnection      *conn,
-			GSocketClientEvent   event,
-			GIOStream           *connection,
-			gpointer             user_data)
-{
-	SoupMessageQueueItem *item = user_data;
-
-	soup_message_network_event (item->msg, event, connection);
-}
-
-void
-soup_message_queue_item_set_connection (SoupMessageQueueItem *item,
-					SoupConnection       *conn)
-{
-	if (item->conn) {
-		g_signal_handlers_disconnect_by_func (item->conn, proxy_connection_event, item);
-		g_object_unref (item->conn);
-	}
-
-	item->conn = conn;
-
-	if (item->conn) {
-		g_object_ref (item->conn);
-		g_signal_connect (item->conn, "event",
-				  G_CALLBACK (proxy_connection_event), item);
-	}
 }
 
 /**

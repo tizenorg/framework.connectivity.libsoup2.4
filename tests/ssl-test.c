@@ -1,13 +1,11 @@
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
-#include "libsoup/soup.h"
+/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*- */
 
 #include "test-utils.h"
 
+static char *uri;
+
 static void
-do_properties_test_for_session (SoupSession *session, char *uri)
+do_properties_test_for_session (SoupSession *session, const char *uri)
 {
 	SoupMessage *msg;
 	GTlsCertificate *cert;
@@ -15,42 +13,27 @@ do_properties_test_for_session (SoupSession *session, char *uri)
 
 	msg = soup_message_new ("GET", uri);
 	soup_session_send_message (session, msg);
-	if (msg->status_code != SOUP_STATUS_OK) {
-		debug_printf (1, "    FAILED: %d %s\n",
-			      msg->status_code, msg->reason_phrase);
-		errors++;
-	}
+	soup_test_assert_message_status (msg, SOUP_STATUS_OK);
 
 	if (soup_message_get_https_status (msg, &cert, &flags)) {
-		if (!G_IS_TLS_CERTIFICATE (cert)) {
-			debug_printf (1, "    No certificate?\n");
-			errors++;
-		}
-		if (flags != G_TLS_CERTIFICATE_UNKNOWN_CA) {
-			debug_printf (1, "    Wrong cert flags (got %x, wanted %x)\n",
-				      flags, G_TLS_CERTIFICATE_UNKNOWN_CA);
-			errors++;
-		}
-	} else {
-		debug_printf (1, "    Response not https\n");
-		errors++;
-	}
-	if (soup_message_get_flags (msg) & SOUP_MESSAGE_CERTIFICATE_TRUSTED) {
-		debug_printf (1, "    CERTIFICATE_TRUSTED set?\n");
-		errors++;
-	}
+		g_assert_true (G_IS_TLS_CERTIFICATE (cert));
+		g_assert_cmpuint (flags, ==, G_TLS_CERTIFICATE_UNKNOWN_CA);
+	} else
+		soup_test_assert (FALSE, "Response not https");
+
+	g_test_bug ("665182");
+	g_assert_false (soup_message_get_flags (msg) & SOUP_MESSAGE_CERTIFICATE_TRUSTED);
 
 	g_object_unref (msg);
 }
 
 static void
-do_properties_tests (char *uri)
+do_async_properties_tests (void)
 {
 	SoupSession *session;
 
-	debug_printf (1, "\nSoupMessage properties\n");
+	SOUP_TEST_SKIP_IF_NO_TLS;
 
-	debug_printf (1, "  async\n");
 	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
 	g_object_set (G_OBJECT (session),
 		      SOUP_SESSION_SSL_CA_FILE, "/dev/null",
@@ -58,8 +41,15 @@ do_properties_tests (char *uri)
 		      NULL);
 	do_properties_test_for_session (session, uri);
 	soup_test_session_abort_unref (session);
+}
 
-	debug_printf (1, "  sync\n");
+static void
+do_sync_properties_tests (void)
+{
+	SoupSession *session;
+
+	SOUP_TEST_SKIP_IF_NO_TLS;
+
 	session = soup_test_session_new (SOUP_TYPE_SESSION_SYNC, NULL);
 	g_object_set (G_OBJECT (session),
 		      SOUP_SESSION_SSL_CA_FILE, "/dev/null",
@@ -69,81 +59,74 @@ do_properties_tests (char *uri)
 	soup_test_session_abort_unref (session);
 }
 
+typedef struct {
+	const char *name;
+	gboolean sync;
+	gboolean strict;
+	gboolean with_ca_list;
+	guint expected_status;
+} StrictnessTest;
+
+static const StrictnessTest strictness_tests[] = {
+	{ "/ssl/strictness/async/strict/with-ca",
+	  FALSE, TRUE, TRUE, SOUP_STATUS_OK },
+	{ "/ssl/strictness/async/strict/without-ca",
+	  FALSE, TRUE, FALSE, SOUP_STATUS_SSL_FAILED },
+	{ "/ssl/strictness/async/non-strict/with-ca",
+	  FALSE, FALSE, TRUE, SOUP_STATUS_OK },
+	{ "/ssl/strictness/async/non-strict/without-ca",
+	  FALSE, FALSE, FALSE, SOUP_STATUS_OK },
+	{ "/ssl/strictness/sync/strict/with-ca",
+	  TRUE, TRUE, TRUE, SOUP_STATUS_OK },
+	{ "/ssl/strictness/sync/strict/without-ca",
+	  TRUE, TRUE, FALSE, SOUP_STATUS_SSL_FAILED },
+	{ "/ssl/strictness/sync/non-strict/with-ca",
+	  TRUE, FALSE, TRUE, SOUP_STATUS_OK },
+	{ "/ssl/strictness/sync/non-strict/without-ca",
+	  TRUE, FALSE, FALSE, SOUP_STATUS_OK },
+};
+
 static void
-do_one_strict_test (SoupSession *session, char *uri,
-		    gboolean strict, gboolean with_ca_list,
-		    guint expected_status)
+do_strictness_test (gconstpointer data)
 {
+	const StrictnessTest *test = data;
+	SoupSession *session;
 	SoupMessage *msg;
+	GTlsCertificateFlags flags = 0;
 
-	/* Note that soup_test_session_new() sets
-	 * SOUP_SESSION_SSL_CA_FILE by default, and turns off
-	 * SOUP_SESSION_SSL_STRICT.
-	 */
+	SOUP_TEST_SKIP_IF_NO_TLS;
 
-	g_object_set (G_OBJECT (session),
-		      SOUP_SESSION_SSL_STRICT, strict,
-		      SOUP_SESSION_SSL_CA_FILE, with_ca_list ? SRCDIR "/test-cert.pem" : "/dev/null",
-		      NULL);
-	/* Close existing connections with old params */
-	soup_session_abort (session);
+	session = soup_test_session_new (test->sync ? SOUP_TYPE_SESSION_SYNC : SOUP_TYPE_SESSION_ASYNC,
+					 NULL);
+	if (!test->strict) {
+		g_object_set (G_OBJECT (session),
+			      SOUP_SESSION_SSL_STRICT, FALSE,
+			      NULL);
+	}
+	if (!test->with_ca_list) {
+		g_object_set (G_OBJECT (session),
+			      SOUP_SESSION_SSL_CA_FILE, "/dev/null",
+			      NULL);
+	}
 
 	msg = soup_message_new ("GET", uri);
 	soup_session_send_message (session, msg);
-	if (msg->status_code != expected_status) {
-		debug_printf (1, "      FAILED: %d %s (expected %d %s)\n",
-			      msg->status_code, msg->reason_phrase,
-			      expected_status,
-			      soup_status_get_phrase (expected_status));
-		if (msg->status_code == SOUP_STATUS_SSL_FAILED) {
-			GTlsCertificateFlags flags = 0;
+	soup_test_assert_message_status (msg, test->expected_status);
 
-			soup_message_get_https_status (msg, NULL, &flags);
-			debug_printf (1, "              tls error flags: 0x%x\n", flags);
-		}
-		errors++;
-	} else if (with_ca_list && SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
-		if (!(soup_message_get_flags (msg) & SOUP_MESSAGE_CERTIFICATE_TRUSTED)) {
-			debug_printf (1, "    CERTIFICATE_TRUSTED not set?\n");
-			errors++;
-		}
-	} else {
-		if (with_ca_list && soup_message_get_flags (msg) & SOUP_MESSAGE_CERTIFICATE_TRUSTED) {
-			debug_printf (1, "    CERTIFICATE_TRUSTED set?\n");
-			errors++;
-		}
-	}
+	g_test_bug ("690176");
+	g_assert_true (soup_message_get_https_status (msg, NULL, &flags));
+
+	g_test_bug ("665182");
+	if (test->with_ca_list && SOUP_STATUS_IS_SUCCESSFUL (msg->status_code))
+		g_assert_true (soup_message_get_flags (msg) & SOUP_MESSAGE_CERTIFICATE_TRUSTED);
+	else
+		g_assert_false (soup_message_get_flags (msg) & SOUP_MESSAGE_CERTIFICATE_TRUSTED);
+
+	if (msg->status_code == SOUP_STATUS_SSL_FAILED &&
+	    test->expected_status != SOUP_STATUS_SSL_FAILED)
+		debug_printf (1, "              tls error flags: 0x%x\n", flags);
 
 	g_object_unref (msg);
-}
-
-static void
-do_strict_tests (char *uri)
-{
-	SoupSession *session;
-
-	debug_printf (1, "\nstrict/nonstrict\n");
-
-	session = soup_test_session_new (SOUP_TYPE_SESSION_ASYNC, NULL);
-	debug_printf (1, "  async with CA list\n");
-	do_one_strict_test (session, uri, TRUE, TRUE, SOUP_STATUS_OK);
-	debug_printf (1, "  async without CA list\n");
-	do_one_strict_test (session, uri, TRUE, FALSE, SOUP_STATUS_SSL_FAILED);
-	debug_printf (1, "  async non-strict with CA list\n");
-	do_one_strict_test (session, uri, FALSE, TRUE, SOUP_STATUS_OK);
-	debug_printf (1, "  async non-strict without CA list\n");
-	do_one_strict_test (session, uri, FALSE, FALSE, SOUP_STATUS_OK);
-	soup_test_session_abort_unref (session);
-
-	session = soup_test_session_new (SOUP_TYPE_SESSION_SYNC, NULL);
-	debug_printf (1, "  sync with CA list\n");
-	do_one_strict_test (session, uri, TRUE, TRUE, SOUP_STATUS_OK);
-	debug_printf (1, "  sync without CA list\n");
-	do_one_strict_test (session, uri, TRUE, FALSE, SOUP_STATUS_SSL_FAILED);
-	debug_printf (1, "  sync non-strict with CA list\n");
-	do_one_strict_test (session, uri, FALSE, TRUE, SOUP_STATUS_OK);
-	debug_printf (1, "  sync non-strict without CA list\n");
-	do_one_strict_test (session, uri, FALSE, FALSE, SOUP_STATUS_OK);
 	soup_test_session_abort_unref (session);
 }
 
@@ -164,7 +147,9 @@ do_session_property_tests (void)
 	char *ca_file;
 	SoupSession *session;
 
-	debug_printf (1, "session properties\n");
+	g_test_bug ("673678");
+
+	SOUP_TEST_SKIP_IF_NO_TLS;
 
 	session = soup_session_async_new ();
 	g_signal_connect (session, "notify::ssl-use-system-ca-file",
@@ -179,20 +164,12 @@ do_session_property_tests (void)
 		      "tls-database", &tlsdb,
 		      "ssl-ca-file", &ca_file,
 		      NULL);
-	if (use_system) {
-		debug_printf (1, "  ssl-use-system-ca-file defaults to TRUE?\n");
-		errors++;
-	}
-	if (tlsdb) {
-		debug_printf (1, "  tls-database set by default?\n");
-		errors++;
-		g_object_unref (tlsdb);
-	}
-	if (ca_file) {
-		debug_printf (1, "  ca-file set by default?\n");
-		errors++;
-		g_free (ca_file);
-	}
+	soup_test_assert (!use_system,
+			  "ssl-use-system-ca-file defaults to TRUE");
+	soup_test_assert (tlsdb == NULL,
+			  "tls-database set by default");
+	soup_test_assert (ca_file == NULL,
+			  "ca-file set by default");
 
 	use_system_changed = tlsdb_changed = ca_file_changed = FALSE;
 	g_object_set (G_OBJECT (session),
@@ -203,68 +180,37 @@ do_session_property_tests (void)
 		      "tls-database", &tlsdb,
 		      "ssl-ca-file", &ca_file,
 		      NULL);
-	if (!use_system) {
-		debug_printf (1, "  setting ssl-use-system-ca-file failed\n");
-		errors++;
-	}
-	if (!tlsdb) {
-		debug_printf (1, "  setting ssl-use-system-ca-file didn't set tls-database\n");
-		errors++;
-	} else
-		g_object_unref (tlsdb);
-	if (ca_file) {
-		debug_printf (1, "  setting ssl-use-system-ca-file set ssl-ca-file\n");
-		errors++;
-		g_free (ca_file);
-	}
-	if (!use_system_changed) {
-		debug_printf (1, "  setting ssl-use-system-ca-file didn't emit notify::ssl-use-system-ca-file\n");
-		errors++;
-	}
-	if (!tlsdb_changed) {
-		debug_printf (1, "  setting ssl-use-system-ca-file didn't emit notify::tls-database\n");
-		errors++;
-	}
-	if (ca_file_changed) {
-		debug_printf (1, "  setting ssl-use-system-ca-file emitted notify::ssl-ca-file\n");
-		errors++;
-	}
+	soup_test_assert (use_system,
+			  "setting ssl-use-system-ca-file failed");
+	g_assert_true (use_system_changed);
+	soup_test_assert (tlsdb != NULL,
+			  "setting ssl-use-system-ca-file didn't set tls-database");
+	g_assert_true (tlsdb_changed);
+	g_clear_object (&tlsdb);
+	soup_test_assert (ca_file == NULL,
+			  "setting ssl-use-system-ca-file set ssl-ca-file");
+	g_assert_false (ca_file_changed);
 
 	use_system_changed = tlsdb_changed = ca_file_changed = FALSE;
 	g_object_set (G_OBJECT (session),
-		      "ssl-ca-file", SRCDIR "/test-cert.pem",
+		      "ssl-ca-file", g_test_get_filename (G_TEST_DIST, "/test-cert.pem", NULL),
 		      NULL);
 	g_object_get (G_OBJECT (session),
 		      "ssl-use-system-ca-file", &use_system,
 		      "tls-database", &tlsdb,
 		      "ssl-ca-file", &ca_file,
 		      NULL);
-	if (use_system) {
-		debug_printf (1, "  setting ssl-ca-file left ssl-use-system-ca-file set\n");
-		errors++;
-	}
-	if (!tlsdb) {
-		debug_printf (1, "  setting ssl-ca-file didn't set tls-database\n");
-		errors++;
-	} else
-		g_object_unref (tlsdb);
-	if (!ca_file) {
-		debug_printf (1, "  setting ssl-ca-file failed\n");
-		errors++;
-	} else
-		g_free (ca_file);
-	if (!use_system_changed) {
-		debug_printf (1, "  setting ssl-ca-file didn't emit notify::ssl-use-system-ca-file\n");
-		errors++;
-	}
-	if (!tlsdb_changed) {
-		debug_printf (1, "  setting ssl-ca-file didn't emit notify::tls-database\n");
-		errors++;
-	}
-	if (!ca_file_changed) {
-		debug_printf (1, "  setting ssl-ca-file didn't emit notify::ssl-ca-file\n");
-		errors++;
-	}
+	soup_test_assert (!use_system,
+			  "setting ssl-ca-file left ssl-use-system-ca-file set");
+	g_assert_true (use_system_changed);
+	soup_test_assert (tlsdb != NULL,
+			  "setting ssl-ca-file didn't set tls-database");
+	g_assert_true (tlsdb_changed);
+	g_clear_object (&tlsdb);
+	soup_test_assert (ca_file != NULL,
+			  "setting ssl-ca-file failed");
+	g_assert_true (ca_file_changed);
+	g_free (ca_file);
 
 	use_system_changed = tlsdb_changed = ca_file_changed = FALSE;
 	g_object_set (G_OBJECT (session),
@@ -275,32 +221,15 @@ do_session_property_tests (void)
 		      "tls-database", &tlsdb,
 		      "ssl-ca-file", &ca_file,
 		      NULL);
-	if (use_system) {
-		debug_printf (1, "  setting tls-database NULL left ssl-use-system-ca-file set\n");
-		errors++;
-	}
-	if (tlsdb) {
-		debug_printf (1, "  setting tls-database NULL failed\n");
-		errors++;
-		g_object_unref (tlsdb);
-	}
-	if (ca_file) {
-		debug_printf (1, "  setting tls-database didn't clear ssl-ca-file\n");
-		errors++;
-		g_free (ca_file);
-	}
-	if (use_system_changed) {
-		debug_printf (1, "  setting tls-database emitted notify::ssl-use-system-ca-file\n");
-		errors++;
-	}
-	if (!tlsdb_changed) {
-		debug_printf (1, "  setting tls-database didn't emit notify::tls-database\n");
-		errors++;
-	}
-	if (!ca_file_changed) {
-		debug_printf (1, "  setting tls-database didn't emit notify::ssl-ca-file\n");
-		errors++;
-	}
+	soup_test_assert (!use_system,
+			  "setting tls-database NULL left ssl-use-system-ca-file set");
+	g_assert_false (use_system_changed);
+	soup_test_assert (tlsdb == NULL,
+			  "setting tls-database NULL failed");
+	g_assert_true (tlsdb_changed);
+	soup_test_assert (ca_file == NULL,
+			  "setting tls-database didn't clear ssl-ca-file");
+	g_assert_true (ca_file_changed);
 
 	soup_test_session_abort_unref (session);
 }
@@ -323,7 +252,7 @@ int
 main (int argc, char **argv)
 {
 	SoupServer *server;
-	char *uri;
+	int i, ret;
 
 	test_init (argc, argv, NULL);
 
@@ -332,15 +261,25 @@ main (int argc, char **argv)
 		soup_server_add_handler (server, NULL, server_handler, NULL, NULL);
 		uri = g_strdup_printf ("https://127.0.0.1:%u/",
 				       soup_server_get_port (server));
+	}
 
-		do_session_property_tests ();
-		do_strict_tests (uri);
-		do_properties_tests (uri);
+	g_test_add_func ("/ssl/session-properties", do_session_property_tests);
+	g_test_add_func ("/ssl/message-properties/async", do_async_properties_tests);
+	g_test_add_func ("/ssl/message-properties/sync", do_sync_properties_tests);
 
+	for (i = 0; i < G_N_ELEMENTS (strictness_tests); i++) {
+		g_test_add_data_func (strictness_tests[i].name,
+				      &strictness_tests[i],
+				      do_strictness_test);
+	}
+
+	ret = g_test_run ();
+
+	if (tls_available) {
 		g_free (uri);
 		soup_test_server_quit_unref (server);
 	}
 
 	test_cleanup ();
-	return errors != 0;
+	return ret;
 }

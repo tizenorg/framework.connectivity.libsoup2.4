@@ -9,23 +9,15 @@
 #include <config.h>
 #endif
 
-#include <stdio.h>
 #include <string.h>
-#include <time.h>
-#include <unistd.h>
 
 #include "soup-auth-digest.h"
-#include "soup-headers.h"
-#include "soup-message.h"
+#include "soup.h"
 #include "soup-message-private.h"
-#include "soup-misc.h"
-#include "soup-uri.h"
 
-static gboolean update (SoupAuth *auth, SoupMessage *msg, GHashTable *auth_params);
-static GSList *get_protection_space (SoupAuth *auth, SoupURI *source_uri);
-static void authenticate (SoupAuth *auth, const char *username, const char *password);
-static gboolean is_authenticated (SoupAuth *auth);
-static char *get_authorization (SoupAuth *auth, SoupMessage *msg);
+#ifdef G_OS_WIN32
+#include <process.h>
+#endif
 
 typedef struct {
 	char                    *user;
@@ -48,6 +40,17 @@ typedef struct {
 
 static void recompute_hex_a1 (SoupAuthDigestPrivate *priv);
 
+/**
+ * SOUP_TYPE_AUTH_DIGEST:
+ *
+ * A #GType corresponding to HTTP "Digest" authentication.
+ * #SoupSessions support this by default; if you want to disable
+ * support for it, call soup_session_remove_feature_by_type(),
+ * passing %SOUP_TYPE_AUTH_DIGEST.
+ *
+ * Since: 2.34
+ */
+
 G_DEFINE_TYPE (SoupAuthDigest, soup_auth_digest, SOUP_TYPE_AUTH)
 
 static void
@@ -56,43 +59,19 @@ soup_auth_digest_init (SoupAuthDigest *digest)
 }
 
 static void
-finalize (GObject *object)
+soup_auth_digest_finalize (GObject *object)
 {
 	SoupAuthDigestPrivate *priv = SOUP_AUTH_DIGEST_GET_PRIVATE (object);
 
-	if (priv->user)
-		g_free (priv->user);
-	if (priv->nonce)
-		g_free (priv->nonce);
-	if (priv->domain)
-		g_free (priv->domain);
-	if (priv->cnonce)
-		g_free (priv->cnonce);
+	g_free (priv->user);
+	g_free (priv->nonce);
+	g_free (priv->domain);
+	g_free (priv->cnonce);
 
 	memset (priv->hex_urp, 0, sizeof (priv->hex_urp));
 	memset (priv->hex_a1, 0, sizeof (priv->hex_a1));
 
 	G_OBJECT_CLASS (soup_auth_digest_parent_class)->finalize (object);
-}
-
-static void
-soup_auth_digest_class_init (SoupAuthDigestClass *auth_digest_class)
-{
-	SoupAuthClass *auth_class = SOUP_AUTH_CLASS (auth_digest_class);
-	GObjectClass *object_class = G_OBJECT_CLASS (auth_digest_class);
-
-	g_type_class_add_private (auth_digest_class, sizeof (SoupAuthDigestPrivate));
-
-	auth_class->scheme_name = "Digest";
-	auth_class->strength = 5;
-
-	auth_class->get_protection_space = get_protection_space;
-	auth_class->update = update;
-	auth_class->authenticate = authenticate;
-	auth_class->is_authenticated = is_authenticated;
-	auth_class->get_authorization = get_authorization;
-
-	object_class->finalize = finalize;
 }
 
 SoupAuthDigestAlgorithm
@@ -155,7 +134,8 @@ soup_auth_digest_get_qop (SoupAuthDigestQop qop)
 }
 
 static gboolean
-update (SoupAuth *auth, SoupMessage *msg, GHashTable *auth_params)
+soup_auth_digest_update (SoupAuth *auth, SoupMessage *msg,
+			 GHashTable *auth_params)
 {
 	SoupAuthDigestPrivate *priv = SOUP_AUTH_DIGEST_GET_PRIVATE (auth);
 	const char *stale, *qop;
@@ -202,7 +182,7 @@ update (SoupAuth *auth, SoupMessage *msg, GHashTable *auth_params)
 }
 
 static GSList *
-get_protection_space (SoupAuth *auth, SoupURI *source_uri)
+soup_auth_digest_get_protection_space (SoupAuth *auth, SoupURI *source_uri)
 {
 	SoupAuthDigestPrivate *priv = SOUP_AUTH_DIGEST_GET_PRIVATE (auth);
 	GSList *space = NULL;
@@ -307,10 +287,14 @@ recompute_hex_a1 (SoupAuthDigestPrivate *priv)
 }
 
 static void
-authenticate (SoupAuth *auth, const char *username, const char *password)
+soup_auth_digest_authenticate (SoupAuth *auth, const char *username,
+			       const char *password)
 {
 	SoupAuthDigestPrivate *priv = SOUP_AUTH_DIGEST_GET_PRIVATE (auth);
 	char *bgen;
+
+	g_clear_pointer (&priv->cnonce, g_free);
+	g_clear_pointer (&priv->user, g_free);
 
 	/* Create client nonce */
 	bgen = g_strdup_printf ("%p:%lu:%lu",
@@ -332,7 +316,7 @@ authenticate (SoupAuth *auth, const char *username, const char *password)
 }
 
 static gboolean
-is_authenticated (SoupAuth *auth)
+soup_auth_digest_is_authenticated (SoupAuth *auth)
 {
 	return SOUP_AUTH_DIGEST_GET_PRIVATE (auth)->cnonce != NULL;
 }
@@ -368,7 +352,7 @@ soup_auth_digest_compute_response (const char        *method,
 	if (qop) {
 		char tmp[9];
 
-		snprintf (tmp, 9, "%.8x", nc);
+		g_snprintf (tmp, 9, "%.8x", nc);
 		g_checksum_update (checksum, (guchar *)tmp, strlen (tmp));
 		g_checksum_update (checksum, (guchar *)":", 1);
 		g_checksum_update (checksum, (guchar *)cnonce, strlen (cnonce));
@@ -417,7 +401,7 @@ authentication_info_cb (SoupMessage *msg, gpointer data)
 }
 
 static char *
-get_authorization (SoupAuth *auth, SoupMessage *msg)
+soup_auth_digest_get_authorization (SoupAuth *auth, SoupMessage *msg)
 {
 	SoupAuthDigestPrivate *priv = SOUP_AUTH_DIGEST_GET_PRIVATE (auth);
 	char response[33], *token;
@@ -479,4 +463,24 @@ get_authorization (SoupAuth *auth, SoupMessage *msg)
 					 G_CALLBACK (authentication_info_cb),
 					 auth);
 	return token;
+}
+
+static void
+soup_auth_digest_class_init (SoupAuthDigestClass *auth_digest_class)
+{
+	SoupAuthClass *auth_class = SOUP_AUTH_CLASS (auth_digest_class);
+	GObjectClass *object_class = G_OBJECT_CLASS (auth_digest_class);
+
+	g_type_class_add_private (auth_digest_class, sizeof (SoupAuthDigestPrivate));
+
+	auth_class->scheme_name = "Digest";
+	auth_class->strength = 5;
+
+	auth_class->get_protection_space = soup_auth_digest_get_protection_space;
+	auth_class->update = soup_auth_digest_update;
+	auth_class->authenticate = soup_auth_digest_authenticate;
+	auth_class->is_authenticated = soup_auth_digest_is_authenticated;
+	auth_class->get_authorization = soup_auth_digest_get_authorization;
+
+	object_class->finalize = soup_auth_digest_finalize;
 }

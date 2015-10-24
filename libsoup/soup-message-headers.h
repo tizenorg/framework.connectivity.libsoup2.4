@@ -8,6 +8,8 @@
 
 #include <libsoup/soup-types.h>
 
+G_BEGIN_DECLS
+
 typedef struct SoupMessageHeaders SoupMessageHeaders;
 GType soup_message_headers_get_type (void);
 #define SOUP_TYPE_MESSAGE_HEADERS (soup_message_headers_get_type ())
@@ -33,14 +35,18 @@ void                soup_message_headers_remove   (SoupMessageHeaders *hdrs,
 						   const char         *name);
 void                soup_message_headers_clear    (SoupMessageHeaders *hdrs);
 
+SOUP_AVAILABLE_IN_2_36
 void                soup_message_headers_clean_connection_headers (SoupMessageHeaders *hdrs);
 
-#ifndef LIBSOUP_DISABLE_DEPRECATED
+#ifndef SOUP_DISABLE_DEPRECATED
+SOUP_DEPRECATED_IN_2_28_FOR ("soup_message_headers_get_one or soup_message_headers_get_list")
 const char         *soup_message_headers_get      (SoupMessageHeaders *hdrs,
 						   const char         *name);
 #endif
+SOUP_AVAILABLE_IN_2_28
 const char         *soup_message_headers_get_one  (SoupMessageHeaders *hdrs,
 						   const char         *name);
+SOUP_AVAILABLE_IN_2_28
 const char         *soup_message_headers_get_list (SoupMessageHeaders *hdrs,
 						   const char         *name);
 
@@ -96,40 +102,52 @@ typedef struct {
 	goffset end;
 } SoupRange;
 
+SOUP_AVAILABLE_IN_2_26
 gboolean        soup_message_headers_get_ranges          (SoupMessageHeaders  *hdrs,
 							  goffset              total_length,
 							  SoupRange          **ranges,
 							  int                 *length);
+SOUP_AVAILABLE_IN_2_26
 void            soup_message_headers_free_ranges         (SoupMessageHeaders  *hdrs,
 							  SoupRange           *ranges);
+SOUP_AVAILABLE_IN_2_26
 void            soup_message_headers_set_ranges          (SoupMessageHeaders  *hdrs,
 							  SoupRange           *ranges,
 							  int                  length);
+SOUP_AVAILABLE_IN_2_26
 void            soup_message_headers_set_range           (SoupMessageHeaders  *hdrs,
 							  goffset              start,
 							  goffset              end);
 
+SOUP_AVAILABLE_IN_2_26
 gboolean        soup_message_headers_get_content_range   (SoupMessageHeaders  *hdrs,
 							  goffset             *start,
 							  goffset             *end,
 							  goffset             *total_length);
+SOUP_AVAILABLE_IN_2_26
 void            soup_message_headers_set_content_range   (SoupMessageHeaders  *hdrs,
 							  goffset              start,
 							  goffset              end,
 							  goffset              total_length);
 
 
+SOUP_AVAILABLE_IN_2_26
 const char *soup_message_headers_get_content_type     (SoupMessageHeaders  *hdrs,
 						       GHashTable         **params);
+SOUP_AVAILABLE_IN_2_26
 void        soup_message_headers_set_content_type     (SoupMessageHeaders  *hdrs,
 						       const char          *content_type,
 						       GHashTable          *params);
 
+SOUP_AVAILABLE_IN_2_26
 gboolean soup_message_headers_get_content_disposition (SoupMessageHeaders  *hdrs,
 						       char               **disposition,
 						       GHashTable         **params);
+SOUP_AVAILABLE_IN_2_26
 void     soup_message_headers_set_content_disposition (SoupMessageHeaders  *hdrs,
 						       const char          *disposition,
 						       GHashTable          *params);
+
+G_END_DECLS
 
 #endif /* SOUP_MESSAGE_HEADERS_H */

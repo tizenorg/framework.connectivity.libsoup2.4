@@ -9,40 +9,48 @@
 #include <config.h>
 #endif
 
-#include "soup-proxy-uri-resolver.h"
-#include "soup-session-feature.h"
+#undef SOUP_VERSION_MIN_REQUIRED
+#define SOUP_VERSION_MIN_REQUIRED SOUP_VERSION_2_42
 
-GType
-soup_proxy_uri_resolver_get_type (void)
+#include "soup-proxy-uri-resolver.h"
+#include "soup.h"
+
+/*
+ * SECTION:soup-proxy-uri-resolver
+ * @short_description: Interface for locating HTTP proxies
+ *
+ * #SoupProxyURIResolver is an interface for finding appropriate HTTP
+ * proxies to use.
+ *
+ * Deprecated: #SoupSession now has a #SoupSession:proxy-resolver
+ * property that takes a #GProxyResolver (which is semantically
+ * identical to #SoupProxyURIResolver).
+ *
+ * Even in older releases of libsoup, you are not likely to have to
+ * implement this interface on your own; instead, you should usually
+ * just be able to use #SoupProxyResolverDefault.
+ */
+
+G_DEFINE_INTERFACE_WITH_CODE (SoupProxyURIResolver, soup_proxy_uri_resolver, G_TYPE_OBJECT,
+			      g_type_interface_add_prerequisite (g_define_type_id, SOUP_TYPE_SESSION_FEATURE);
+			      )
+
+static void
+soup_proxy_uri_resolver_default_init (SoupProxyURIResolverInterface *iface)
 {
-  static volatile gsize g_define_type_id__volatile = 0;
-  if (g_once_init_enter (&g_define_type_id__volatile))
-    {
-      GType g_define_type_id =
-        g_type_register_static_simple (G_TYPE_INTERFACE,
-                                       g_intern_static_string ("SoupProxyURIResolver"),
-                                       sizeof (SoupProxyURIResolverInterface),
-                                       (GClassInitFunc)NULL,
-                                       0,
-                                       (GInstanceInitFunc)NULL,
-                                       (GTypeFlags) 0);
-      g_type_interface_add_prerequisite (g_define_type_id, G_TYPE_OBJECT);
-      g_once_init_leave (&g_define_type_id__volatile, g_define_type_id);
-    }
-  return g_define_type_id__volatile;
 }
 
-/**
+/*
  * SoupProxyURIResolverCallback:
  * @resolver: the #SoupProxyURIResolver
- * @status: a #SoupKnownStatusCode
+ * @status: a #SoupStatus
  * @proxy_uri: the resolved proxy URI, or %NULL
  * @user_data: data passed to soup_proxy_uri_resolver_get_proxy_uri_async()
  *
  * Callback for soup_proxy_uri_resolver_get_proxy_uri_async()
- **/
+ */
 
-/**
+/*
  * soup_proxy_uri_resolver_get_proxy_uri_async:
  * @proxy_uri_resolver: the #SoupProxyURIResolver
  * @uri: the #SoupURI you want a proxy for
@@ -55,7 +63,10 @@ soup_proxy_uri_resolver_get_type (void)
  * @callback.
  *
  * Since: 2.26.3
- **/
+ *
+ * Deprecated: #SoupProxyURIResolver is deprecated in favor of
+ * #GProxyResolver
+ */
 void
 soup_proxy_uri_resolver_get_proxy_uri_async (SoupProxyURIResolver  *proxy_uri_resolver,
 					     SoupURI               *uri,
@@ -70,7 +81,7 @@ soup_proxy_uri_resolver_get_proxy_uri_async (SoupProxyURIResolver  *proxy_uri_re
 				     callback, user_data);
 }
 
-/**
+/*
  * soup_proxy_uri_resolver_get_proxy_uri_sync:
  * @proxy_uri_resolver: the #SoupProxyURIResolver
  * @uri: the #SoupURI you want a proxy for
@@ -85,7 +96,10 @@ soup_proxy_uri_resolver_get_proxy_uri_async (SoupProxyURIResolver  *proxy_uri_re
  * error.
  *
  * Since: 2.26.3
- **/
+ *
+ * Deprecated: #SoupProxyURIResolver is deprecated in favor of
+ * #GProxyResolver
+ */
 guint
 soup_proxy_uri_resolver_get_proxy_uri_sync (SoupProxyURIResolver  *proxy_uri_resolver,
 					    SoupURI               *uri,

@@ -43,14 +43,22 @@ typedef struct {
 	void (*_libsoup_reserved5) (void);
 } SoupContentSnifferClass;
 
-GType               soup_content_sniffer_get_type (void);
+SOUP_AVAILABLE_IN_2_28
+GType               soup_content_sniffer_get_type        (void);
 
-SoupContentSniffer *soup_content_sniffer_new      (void);
+SOUP_AVAILABLE_IN_2_28
+SoupContentSniffer *soup_content_sniffer_new             (void);
 
-char               *soup_content_sniffer_sniff    (SoupContentSniffer *sniffer,
-						   SoupMessage *msg,
-						   SoupBuffer *buffer,
-						   GHashTable **params);
+SOUP_AVAILABLE_IN_2_28
+char               *soup_content_sniffer_sniff           (SoupContentSniffer  *sniffer,
+							  SoupMessage         *msg,
+							  SoupBuffer          *buffer,
+							  GHashTable         **params);
+SOUP_AVAILABLE_IN_2_28
+gsize               soup_content_sniffer_get_buffer_size (SoupContentSniffer  *sniffer);
+//#if ENABLE(TIZEN_TV_DISABLE_MIME_SNIFF)
+void                soup_content_mime_sniff_set (gboolean gDisableMimeSniff);
+//#endif
 
 G_END_DECLS
 

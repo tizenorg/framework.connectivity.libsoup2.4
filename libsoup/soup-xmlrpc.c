@@ -10,16 +10,11 @@
 #endif
 
 #include <string.h>
-#include <time.h>
 
 #include <libxml/tree.h>
 
 #include "soup-xmlrpc.h"
-#include "soup-value-utils.h"
-#include "soup-date.h"
-#include "soup-message.h"
-#include "soup-misc.h"
-#include "soup-session.h"
+#include "soup.h"
 
 /**
  * SECTION:soup-xmlrpc
@@ -30,24 +25,6 @@
 static xmlNode *find_real_node (xmlNode *node);
 
 static gboolean insert_value (xmlNode *parent, GValue *value);
-
-static void
-insert_member (gpointer name, gpointer value, gpointer data)
-{
-	xmlNode *member, **struct_node = data;
-
-	if (!*struct_node)
-		return;
-
-	member = xmlNewChild (*struct_node, NULL,
-			      (const xmlChar *)"member", NULL);
-	xmlNewTextChild (member, NULL,
-			 (const xmlChar *)"name", (const xmlChar *)name);
-	if (!insert_value (member, value)) {
-		xmlFreeNode (*struct_node);
-		*struct_node = NULL;
-	}
-}
 
 static gboolean
 insert_value (xmlNode *parent, GValue *value)
@@ -95,11 +72,28 @@ insert_value (xmlNode *parent, GValue *value)
 		g_free (encoded);
 	} else if (type == G_TYPE_HASH_TABLE) {
 		GHashTable *hash = g_value_get_boxed (value);
-		xmlNode *struct_node;
+		GHashTableIter iter;
+		gpointer mname, mvalue;
+		xmlNode *struct_node, *member;
 
 		struct_node = xmlNewChild (xvalue, NULL,
 					   (const xmlChar *)"struct", NULL);
-		g_hash_table_foreach (hash, insert_member, &struct_node);
+
+		g_hash_table_iter_init (&iter, hash);
+
+		while (g_hash_table_iter_next (&iter, &mname, &mvalue)) {
+			member = xmlNewChild (struct_node, NULL,
+					      (const xmlChar *)"member", NULL);
+			xmlNewTextChild (member, NULL,
+					 (const xmlChar *)"name",
+					 (const xmlChar *)mname);
+			if (!insert_value (member, mvalue)) {
+				xmlFreeNode (struct_node);
+				struct_node = NULL;
+				break;
+			}
+		}
+
 		if (!struct_node)
 			return FALSE;
 #ifdef G_GNUC_BEGIN_IGNORE_DEPRECATIONS
@@ -294,6 +288,11 @@ soup_xmlrpc_build_method_response (GValue *value)
 	xmlFreeDoc (doc);
 	return body;
 }
+
+static char *
+soup_xmlrpc_build_faultv (int         fault_code,
+                          const char *fault_format,
+                          va_list     args) G_GNUC_PRINTF (2, 0);
 
 static char *
 soup_xmlrpc_build_faultv (int fault_code, const char *fault_format, va_list args)
@@ -599,29 +598,32 @@ soup_xmlrpc_parse_method_call (const char *method_call, int length,
 	xmlMethodName = xmlNodeGetContent (node);
 
 	node = find_real_node (node->next);
-	if (!node || strcmp ((const char *)node->name, "params") != 0)
-		goto fail;
+	if (node) {
+		if (strcmp ((const char *)node->name, "params") != 0)
+			goto fail;
 
 #ifdef G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 #endif
-	*params = g_value_array_new (1);
-	param = find_real_node (node->children);
-	while (param && !strcmp ((const char *)param->name, "param")) {
-		xval = find_real_node (param->children);
-		if (!xval || strcmp ((const char *)xval->name, "value") != 0 ||
-		    !parse_value (xval, &value)) {
-			g_value_array_free (*params);
-			goto fail;
-		}
-		g_value_array_append (*params, &value);
-		g_value_unset (&value);
+		*params = soup_value_array_new ();
+		param = find_real_node (node->children);
+		while (param && !strcmp ((const char *)param->name, "param")) {
+			xval = find_real_node (param->children);
+			if (!xval || strcmp ((const char *)xval->name, "value") != 0 ||
+			    !parse_value (xval, &value)) {
+				g_value_array_free (*params);
+				goto fail;
+			}
+			g_value_array_append (*params, &value);
+			g_value_unset (&value);
 
-		param = find_real_node (param->next);
-	}
+			param = find_real_node (param->next);
+		}
 #ifdef G_GNUC_END_IGNORE_DEPRECATIONS
 G_GNUC_END_IGNORE_DEPRECATIONS
 #endif
+	} else
+		*params = soup_value_array_new ();
 
 	success = TRUE;
 	*method_name = g_strdup ((char *)xmlMethodName);

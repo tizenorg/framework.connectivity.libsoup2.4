@@ -14,9 +14,9 @@
 #include <string.h>
 
 #include "soup-cookie-jar-text.h"
-#include "soup-cookie.h"
-#include "soup-date.h"
+#include "soup.h"
 
+#include "TIZEN.h"
 /**
  * SECTION:soup-cookie-jar-text
  * @short_description: Text-file-based ("cookies.txt") Cookie Jar
@@ -41,16 +41,7 @@ typedef struct {
 
 G_DEFINE_TYPE (SoupCookieJarText, soup_cookie_jar_text, SOUP_TYPE_COOKIE_JAR)
 
-static void load    (SoupCookieJar *jar);
-static void changed (SoupCookieJar *jar,
-		     SoupCookie    *old_cookie,
-		     SoupCookie    *new_cookie);
-static gboolean is_persistent (SoupCookieJar *jar);
-
-static void set_property (GObject *object, guint prop_id,
-			  const GValue *value, GParamSpec *pspec);
-static void get_property (GObject *object, guint prop_id,
-			  GValue *value, GParamSpec *pspec);
+static void load (SoupCookieJar *jar);
 
 static void
 soup_cookie_jar_text_init (SoupCookieJarText *text)
@@ -58,7 +49,7 @@ soup_cookie_jar_text_init (SoupCookieJarText *text)
 }
 
 static void
-finalize (GObject *object)
+soup_cookie_jar_text_finalize (GObject *object)
 {
 	SoupCookieJarTextPrivate *priv =
 		SOUP_COOKIE_JAR_TEXT_GET_PRIVATE (object);
@@ -69,39 +60,8 @@ finalize (GObject *object)
 }
 
 static void
-soup_cookie_jar_text_class_init (SoupCookieJarTextClass *text_class)
-{
-	SoupCookieJarClass *cookie_jar_class =
-		SOUP_COOKIE_JAR_CLASS (text_class);
-	GObjectClass *object_class = G_OBJECT_CLASS (text_class);
-
-	g_type_class_add_private (text_class, sizeof (SoupCookieJarTextPrivate));
-
-	cookie_jar_class->is_persistent = is_persistent;
-	cookie_jar_class->changed       = changed;
-
-	object_class->finalize     = finalize;
-	object_class->set_property = set_property;
-	object_class->get_property = get_property;
-
-	/**
-	 * SOUP_COOKIE_JAR_TEXT_FILENAME:
-	 *
-	 * Alias for the #SoupCookieJarText:filename property. (The
-	 * cookie-storage filename.)
-	 **/
-	g_object_class_install_property (
-		object_class, PROP_FILENAME,
-		g_param_spec_string (SOUP_COOKIE_JAR_TEXT_FILENAME,
-				     "Filename",
-				     "Cookie-storage filename",
-				     NULL,
-				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
-}
-
-static void
-set_property (GObject *object, guint prop_id,
-	      const GValue *value, GParamSpec *pspec)
+soup_cookie_jar_text_set_property (GObject *object, guint prop_id,
+				   const GValue *value, GParamSpec *pspec)
 {
 	SoupCookieJarTextPrivate *priv =
 		SOUP_COOKIE_JAR_TEXT_GET_PRIVATE (object);
@@ -118,8 +78,8 @@ set_property (GObject *object, guint prop_id,
 }
 
 static void
-get_property (GObject *object, guint prop_id,
-	      GValue *value, GParamSpec *pspec)
+soup_cookie_jar_text_get_property (GObject *object, guint prop_id,
+				   GValue *value, GParamSpec *pspec)
 {
 	SoupCookieJarTextPrivate *priv =
 		SOUP_COOKIE_JAR_TEXT_GET_PRIVATE (object);
@@ -176,7 +136,18 @@ parse_cookie (char *line, time_t now)
 	if (g_str_has_prefix (line, "#HttpOnly_")) {
 		http_only = TRUE;
 		line += strlen ("#HttpOnly_");
+#if ENABLE(TIZEN_TV_FIX_TEXT_STORAGE_MODE_OF_COOKIE)
+	/* For file:// protocol, When use document.cookie to get/set cookie.
+	* host(first field of cookie string) will be empty.'\t' has been
+	* used as a separator to split each field. Because host is empty,
+	* the first char of cookie string will be '\t'. it may cause
+	* parse_cookie() interrupted and returned. This modification can
+	* make cookie parsing normally for file:// protocol.
+	*/
+	} else if (*line == '#')
+#else
 	} else if (*line == '#' || g_ascii_isspace (*line))
+#endif
 		return cookie;
 	else
 		http_only = FALSE;
@@ -316,9 +287,9 @@ delete_cookie (const char *filename, SoupCookie *cookie)
 }
 
 static void
-changed (SoupCookieJar *jar,
-	 SoupCookie    *old_cookie,
-	 SoupCookie    *new_cookie)
+soup_cookie_jar_text_changed (SoupCookieJar *jar,
+			      SoupCookie    *old_cookie,
+			      SoupCookie    *new_cookie)
 {
 	FILE *out;
 	SoupCookieJarTextPrivate *priv =
@@ -367,7 +338,38 @@ changed (SoupCookieJar *jar,
 }
 
 static gboolean
-is_persistent (SoupCookieJar *jar)
+soup_cookie_jar_text_is_persistent (SoupCookieJar *jar)
 {
 	return TRUE;
+}
+
+static void
+soup_cookie_jar_text_class_init (SoupCookieJarTextClass *text_class)
+{
+	SoupCookieJarClass *cookie_jar_class =
+		SOUP_COOKIE_JAR_CLASS (text_class);
+	GObjectClass *object_class = G_OBJECT_CLASS (text_class);
+
+	g_type_class_add_private (text_class, sizeof (SoupCookieJarTextPrivate));
+
+	cookie_jar_class->is_persistent = soup_cookie_jar_text_is_persistent;
+	cookie_jar_class->changed       = soup_cookie_jar_text_changed;
+
+	object_class->finalize     = soup_cookie_jar_text_finalize;
+	object_class->set_property = soup_cookie_jar_text_set_property;
+	object_class->get_property = soup_cookie_jar_text_get_property;
+
+	/**
+	 * SOUP_COOKIE_JAR_TEXT_FILENAME:
+	 *
+	 * Alias for the #SoupCookieJarText:filename property. (The
+	 * cookie-storage filename.)
+	 **/
+	g_object_class_install_property (
+		object_class, PROP_FILENAME,
+		g_param_spec_string (SOUP_COOKIE_JAR_TEXT_FILENAME,
+				     "Filename",
+				     "Cookie-storage filename",
+				     NULL,
+				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 }

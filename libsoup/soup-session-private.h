@@ -16,27 +16,43 @@ G_BEGIN_DECLS
 /* "protected" methods for subclasses */
 SoupMessageQueue     *soup_session_get_queue            (SoupSession          *session);
 
-SoupMessageQueueItem *soup_session_make_connect_message (SoupSession          *session,
-							 SoupConnection       *conn);
-gboolean              soup_session_get_connection       (SoupSession          *session,
+SoupMessageQueueItem *soup_session_append_queue_item    (SoupSession          *session,
+							 SoupMessage          *msg,
+							 gboolean              async,
+							 gboolean              new_api,
+							 SoupSessionCallback   callback,
+							 gpointer              user_data);
+
+void                  soup_session_kick_queue           (SoupSession          *session);
+
+GInputStream         *soup_session_send_request         (SoupSession          *session,
+							 SoupMessage          *msg,
+							 GCancellable         *cancellable,
+							 GError              **error);
+
+void                  soup_session_send_request_async   (SoupSession          *session,
+							 SoupMessage          *msg,
+							 GCancellable         *cancellable,
+							 GAsyncReadyCallback   callback,
+							 gpointer              user_data);
+GInputStream         *soup_session_send_request_finish  (SoupSession          *session,
+							 GAsyncResult         *result,
+							 GError              **error);
+
+void                  soup_session_process_queue_item   (SoupSession          *session,
 							 SoupMessageQueueItem *item,
-							 gboolean             *try_pruning);
-gboolean              soup_session_cleanup_connections  (SoupSession          *session,
-							 gboolean              prune_idle);
-void                  soup_session_send_queue_item      (SoupSession          *session,
-							 SoupMessageQueueItem *item,
-							 SoupMessageCompletionFn completion_cb);
-void                  soup_session_unqueue_item         (SoupSession          *session,
-							 SoupMessageQueueItem *item);
-void                  soup_session_set_item_status      (SoupSession          *session,
-							 SoupMessageQueueItem *item,
-							 guint                 status_code);
+							 gboolean             *should_prune,
+							 gboolean              loop);
 
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
 void			soup_session_set_certificate_file (SoupSession  *session);
 void 			soup_session_tls_start_idle_timer (SoupSession *session, guint idle_timeout);
 void 			soup_session_tls_stop_idle_timer (SoupSession *session);
 gboolean		soup_session_is_tls_db_initialized (SoupSession* session);
+#endif
+#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+guint                 soup_session_get_idle_connection_for_host      (SoupSession  *session,
+		                                                 SoupURI      *uri);
 #endif
 
 G_END_DECLS

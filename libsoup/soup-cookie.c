@@ -13,28 +13,15 @@
 #include <string.h>
 
 #include "soup-cookie.h"
-#include "soup-date.h"
-#include "soup-headers.h"
-#include "soup-message.h"
-#include "soup-message-headers.h"
-#include "soup-uri.h"
-/*TIZEN patch*/
-#include "TIZEN.h"
+#include "soup.h"
 
 /**
  * SECTION:soup-cookie
  * @short_description: HTTP Cookies
- * @see_also: #SoupMessage
+ * @see_also: #SoupMessage, #SoupCookieJar
  *
- * #SoupCookie implements HTTP cookies, primarily as described by
- * <ulink
- * url="http://wp.netscape.com/newsref/std/cookie_spec.html">the
- * original Netscape cookie specification</ulink>, but with slight
- * modifications based on <ulink
- * url="http://www.ietf.org/rfc/rfc2109.txt">RFC 2109</ulink>, <ulink
- * url="http://msdn2.microsoft.com/en-us/library/ms533046.aspx">Microsoft's
- * HttpOnly extension attribute</ulink>, and observed real-world usage
- * (and, in particular, based on what Firefox does).
+ * #SoupCookie implements HTTP cookies, as described by <ulink
+ * url="http://tools.ietf.org/html/rfc6265.txt">RFC 6265</ulink>.
  *
  * To have a #SoupSession handle cookies for your appliction
  * automatically, use a #SoupCookieJar.
@@ -64,10 +51,9 @@
  * is a hostname and must match exactly.
  *
  * @expires will be non-%NULL if the cookie uses either the original
- * "expires" attribute, or the "max-age" attribute specified in RFC
- * 2109. If @expires is %NULL, it indicates that neither "expires" nor
- * "max-age" was specified, and the cookie expires at the end of the
- * session.
+ * "expires" attribute, or the newer "max-age" attribute. If @expires
+ * is %NULL, it indicates that neither "expires" nor "max-age" was
+ * specified, and the cookie expires at the end of the session.
  * 
  * If @http_only is set, the cookie should not be exposed to untrusted
  * code (eg, javascript), so as to minimize the danger posed by
@@ -76,20 +62,7 @@
  * Since: 2.24
  **/
 
-GType
-soup_cookie_get_type (void)
-{
-	static volatile gsize type_volatile = 0;
-
-	if (g_once_init_enter (&type_volatile)) {
-		GType type = g_boxed_type_register_static (
-			g_intern_static_string ("SoupCookie"),
-			(GBoxedCopyFunc) soup_cookie_copy,
-			(GBoxedFreeFunc) soup_cookie_free);
-		g_once_init_leave (&type_volatile, type);
-	}
-	return type_volatile;
-}
+G_DEFINE_BOXED_TYPE (SoupCookie, soup_cookie, soup_cookie_copy, soup_cookie_free)
 
 /**
  * soup_cookie_copy:
@@ -178,7 +151,7 @@ unskip_lws (const char *s, const char *start)
 #define is_value_ender(ch) ((ch) < ' ' || (ch) == ';')
 
 static char *
-parse_value (const char **val_p)
+parse_value (const char **val_p, gboolean copy)
 {
 	const char *start, *end, *p;
 	char *value;
@@ -190,30 +163,15 @@ parse_value (const char **val_p)
 	for (p = start; !is_value_ender (*p); p++)
 		;
 	end = unskip_lws (p, start);
-	value = g_strndup (start, end - start);
+
+	if (copy)
+		value = g_strndup (start, end - start);
+	else
+		value = NULL;
 
 	*val_p = p;
 	return value;
 }
-
-#if ENABLE(TIZEN_FIX_PARSING_COOKIE_FOR_HTTPONLY_AND_SECURE)
-static void
-skip_value (const char **val_p)
-{
-	const char *start, *end, *p;
-
-	p = *val_p;
-	if (*p == '=')
-		p++;
-	start = skip_lws (p);
-	for (p = start; !is_value_ender (*p); p++)
-		;
-	end = unskip_lws (p, start);
-
-	*val_p = p;
-	return;
-}
-#endif
 
 static SoupDate *
 parse_date (const char **val_p)
@@ -221,7 +179,7 @@ parse_date (const char **val_p)
 	char *value;
 	SoupDate *date;
 
-	value = parse_value (val_p);
+	value = parse_value (val_p, TRUE);
 	date = soup_date_new_from_string (value);
 	g_free (value);
 	return date;
@@ -254,7 +212,7 @@ parse_one_cookie (const char *header, SoupURI *origin)
 	}
 
 	/* Parse the VALUE */
-	cookie->value = parse_value (&p);
+	cookie->value = parse_value (&p, TRUE);
 
 	/* Parse attributes */
 	while (*p == ';') {
@@ -267,7 +225,7 @@ parse_one_cookie (const char *header, SoupURI *origin)
 #define MATCH_NAME(name) ((end - start == strlen (name)) && !g_ascii_strncasecmp (start, name, end - start))
 
 		if (MATCH_NAME ("domain") && has_value) {
-			cookie->domain = parse_value (&p);
+			cookie->domain = parse_value (&p, TRUE);
 			if (!*cookie->domain) {
 				g_free (cookie->domain);
 				cookie->domain = NULL;
@@ -276,14 +234,10 @@ parse_one_cookie (const char *header, SoupURI *origin)
 			cookie->expires = parse_date (&p);
 		} else if (MATCH_NAME ("httponly")) {
 			cookie->http_only = TRUE;
-#if ENABLE(TIZEN_FIX_PARSING_COOKIE_FOR_HTTPONLY_AND_SECURE)
-			/* Ignore the return value as this call is required
-			 * to move p to the end of this atribute.
-			 */
-			skip_value(&p);
-#endif
+			if (has_value)
+				parse_value (&p, FALSE);
 		} else if (MATCH_NAME ("max-age") && has_value) {
-			char *max_age_str = parse_value (&p), *mae;
+			char *max_age_str = parse_value (&p, TRUE), *mae;
 			long max_age = strtol (max_age_str, &mae, 10);
 			if (!*mae) {
 				if (max_age < 0)
@@ -292,25 +246,21 @@ parse_one_cookie (const char *header, SoupURI *origin)
 			}
 			g_free (max_age_str);
 		} else if (MATCH_NAME ("path") && has_value) {
-			cookie->path = parse_value (&p);
+			cookie->path = parse_value (&p, TRUE);
 			if (*cookie->path != '/') {
 				g_free (cookie->path);
 				cookie->path = NULL;
 			}
 		} else if (MATCH_NAME ("secure")) {
 			cookie->secure = TRUE;
-#if ENABLE(TIZEN_FIX_PARSING_COOKIE_FOR_HTTPONLY_AND_SECURE)
-			/* Ignore the return value as this call is required
-			 * to move p to the end of this atribute.
-			 */
-			skip_value(&p);
-#endif
+			if (has_value)
+				parse_value (&p, FALSE);
 		} else {
 			/* Ignore unknown attributes, but we still have
 			 * to skip over the value.
 			 */
 			if (has_value)
-				g_free (parse_value (&p));
+				parse_value (&p, FALSE);
 		}
 	}
 
@@ -399,6 +349,10 @@ cookie_new_internal (const char *name, const char *value,
  * Creates a new #SoupCookie with the given attributes. (Use
  * soup_cookie_set_secure() and soup_cookie_set_http_only() if you
  * need to set those attributes on the returned cookie.)
+ *
+ * If @domain starts with ".", that indicates a domain (which matches
+ * the string after the ".", or any hostname that has @domain as a
+ * suffix). Otherwise, it is a hostname and must match exactly.
  *
  * @max_age is used to set the "expires" attribute on the cookie; pass
  * -1 to not include the attribute (indicating that the cookie expires
@@ -866,9 +820,7 @@ soup_cookie_free (SoupCookie *cookie)
 	g_free (cookie->value);
 	g_free (cookie->domain);
 	g_free (cookie->path);
-
-	if (cookie->expires)
-		soup_date_free (cookie->expires);
+	g_clear_pointer (&cookie->expires, soup_date_free);
 
 	g_slice_free (SoupCookie, cookie);
 }
@@ -1026,11 +978,7 @@ soup_cookies_to_request (GSList *cookies, SoupMessage *msg)
 void
 soup_cookies_free (GSList *cookies)
 {
-	GSList *c;
-
-	for (c = cookies; c; c = c->next)
-		soup_cookie_free (c->data);
-	g_slist_free (cookies);
+	g_slist_free_full (cookies, (GDestroyNotify)soup_cookie_free);
 }
 
 /**
@@ -1113,6 +1061,8 @@ soup_cookie_applies_to_uri (SoupCookie *cookie, SoupURI *uri)
  * match. This may change in the future.
  *
  * Return value: whether the cookies are equal.
+ *
+ * Since: 2.24
  */
 gboolean
 soup_cookie_equal (SoupCookie *cookie1, SoupCookie *cookie2)

@@ -13,7 +13,7 @@ DOC_MAIN_SGML_FILE=$(DOC_MODULE)-docs.sgml
 DOC_SOURCE_DIR=../../libsoup
 
 # Extra options to supply to gtkdoc-scan.
-SCAN_OPTIONS=--deprecated-guards=LIBSOUP_DISABLE_DEPRECATED --rebuild-types
+SCAN_OPTIONS=--deprecated-guards=SOUP_DISABLE_DEPRECATED --rebuild-types --ignore-decorators='SOUP_DEPRECATED\w*\s*\([^)]*\)|SOUP_DEPRECATED\w*|SOUP_AVAILABLE\w*'
 
 # Extra options to supply to gtkdoc-scangobj.
 SCANGOBJ_OPTIONS=
@@ -29,16 +29,23 @@ HFILE_GLOB=
 CFILE_GLOB=
 
 # Header files to ignore when scanning.
-IGNORE_HFILES= soup.h soup-marshal.h soup-enum-types.h \
+IGNORE_HFILES= soup.h soup-enum-types.h \
 	soup-message-private.h soup-session-private.h \
 	soup-auth-basic.h soup-auth-digest.h soup-auth-ntlm.h \
-	soup-connection.h soup-connection-ntlm.h \
-	soup-dns.h soup-auth-manager.h soup-auth-manager-ntlm.h \
-	soup-message-queue.h soup-path-map.h soup-ssl.h \
+	soup-connection.h soup-connection-auth.h \
+	soup-message-queue.h soup-path-map.h soup-gnome-features.h \
 	soup-proxy-resolver.h soup-proxy-resolver-gnome.h \
 	soup-proxy-resolver-static.h soup-directory-input-stream.h \
 	soup-http-input-stream.h soup-password-manager.h \
-	soup-password-manager-gnome.h
+	soup-password-manager-gnome.h soup-converter-wrapper.h \
+	soup-body-input-stream.h soup-body-output-stream.h \
+	soup-client-input-stream.h soup-content-processor.h \
+	soup-content-sniffer-stream.h soup-io-stream.h \
+	soup-cache-input-stream.h soup-filter-input-stream.h \
+	soup-cookie-jar-sqlite.h soup-requester.h soup-tld-private.h \
+	soup-misc-private.h soup-proxy-uri-resolver.h \
+	soup-proxy-resolver-wrapper.h soup-proxy-uri-resolver.h \
+	soup-cache-private.h
 
 # Images to copy into HTML directory.
 HTML_IMAGES = 
@@ -47,7 +54,9 @@ HTML_IMAGES =
 content_files =				\
 	build-howto.xml			\
 	client-howto.xml		\
-	server-howto.xml
+	request-howto.xml		\
+	server-howto.xml		\
+	session-porting.xml
 
 # Other files to distribute.
 extra_files =
@@ -64,11 +73,9 @@ GTKDOC_CFLAGS =				\
 
 GTKDOC_LIBS =						\
 	$(top_builddir)/libsoup/libsoup-2.4.la		\
-	$(top_builddir)/libsoup/libsoup-gnome-2.4.la	\
 	$(GLIB_LIBS)
 
 # include common portion ...
-include $(top_srcdir)/gtk-doc.make
 
 # kludges
 $(srcdir)/tmpl/*.sgml:

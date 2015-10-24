@@ -12,11 +12,9 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 
 #include "soup-date.h"
-/*TIZEN patch*/
-#include "TIZEN.h"
+#include "soup.h"
 
 /**
  * SoupDate:
@@ -57,10 +55,6 @@ static const int nonleap_days_before[] = {
 	0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365
 };
 
-#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
-static int currentSystemYear = 0;
-#endif
-
 static inline gboolean
 is_leap_year (int year)
 {
@@ -94,20 +88,7 @@ days_in_month (int month, int year)
 		return nonleap_days_in_month[month];
 }
 
-GType
-soup_date_get_type (void)
-{
-	static volatile gsize type_volatile = 0;
-
-	if (g_once_init_enter (&type_volatile)) {
-		GType type = g_boxed_type_register_static (
-			g_intern_static_string ("SoupDate"),
-			(GBoxedCopyFunc) soup_date_copy,
-			(GBoxedFreeFunc) soup_date_free);
-		g_once_init_leave (&type_volatile, type);
-	}
-	return type_volatile;
-}
+G_DEFINE_BOXED_TYPE (SoupDate, soup_date, soup_date_copy, soup_date_free)
 
 static void
 soup_date_fixup (SoupDate *date)
@@ -207,7 +188,7 @@ soup_date_new (int year, int month, int day,
  * offset_seconds is 0, returns the current time.
  *
  * If @offset_seconds would indicate a time not expressible as a
- * #time_t, the return value will be clamped into range.
+ * <type>time_t</type>, the return value will be clamped into range.
  *
  * Return value: a new #SoupDate
  **/
@@ -544,7 +525,7 @@ soup_date_new_from_string (const char *date_string)
 
 /**
  * soup_date_new_from_time_t:
- * @when: a #time_t
+ * @when: a <type>time_t</type>
  *
  * Creates a #SoupDate corresponding to @when
  *
@@ -699,13 +680,13 @@ soup_date_to_string (SoupDate *date, SoupDateFormat format)
  * soup_date_to_time_t:
  * @date: a #SoupDate
  *
- * Converts @date to a %time_t.
+ * Converts @date to a <type>time_t</type>.
  *
- * If @date is not representable as a %time_t, it will be clamped into
- * range. (In particular, some HTTP cookies have expiration dates
- * after "Y2.038k" (2038-01-19T03:14:07Z).)
+ * If @date is not representable as a <type>time_t</type>, it will be
+ * clamped into range. (In particular, some HTTP cookies have
+ * expiration dates after "Y2.038k" (2038-01-19T03:14:07Z).)
  *
- * Return value: @date as a %time_t
+ * Return value: @date as a <type>time_t</type>
  **/
 time_t
 soup_date_to_time_t (SoupDate *date)
@@ -775,11 +756,7 @@ soup_date_is_past (SoupDate *date)
 	g_return_val_if_fail (date != NULL, TRUE);
 
 	/* optimization */
-#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
-	if (date->year < currentSystemYear)
-#else
 	if (date->year < 2010)
-#endif
 		return TRUE;
 
 	return soup_date_to_time_t (date) < time (NULL);
@@ -920,6 +897,8 @@ soup_date_get_offset (SoupDate *date)
  * @date: a #SoupDate
  *
  * Copies @date.
+ *
+ * Since: 2.24
  **/
 SoupDate *
 soup_date_copy (SoupDate *date)
@@ -938,6 +917,8 @@ soup_date_copy (SoupDate *date)
  * @date: a #SoupDate
  *
  * Frees @date.
+ *
+ * Since: 2.24
  **/
 void
 soup_date_free (SoupDate *date)
@@ -946,28 +927,3 @@ soup_date_free (SoupDate *date)
 
 	g_slice_free (SoupDate, date);
 }
-
-#if ENABLE(TIZEN_USE_CURRENT_SYSTEM_DATETIME)
-/**
- * soup_date_get_current_system_year:
- *
- * set currentSystemYear
- *
- * Since: 2.35
- **/
-void
-soup_date_get_current_system_year(void)
-{
-	struct tm tm;
-	time_t the_time;
-
-	the_time = time (NULL);
-
-#ifdef HAVE_GMTIME_R
-	gmtime_r (&the_time, &tm);
-#else
-	tm = *gmtime (&the_time);
-#endif
-	currentSystemYear = tm.tm_year + 1900;
-}
-#endif
