@@ -152,10 +152,10 @@ enum {
 #endif
 
 	NETWORK_EVENT,
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 	DYNAMIC_CERTIFICATEPATH,
 #endif
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	ACCEPT_CERTIFICATE,
 #endif
 
@@ -710,7 +710,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 			      G_TYPE_SOCKET_CLIENT_EVENT,
 			      G_TYPE_IO_STREAM);
 
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 	signals[DYNAMIC_CERTIFICATEPATH] =
 		g_signal_new ("dynamic-certificatePath",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -729,7 +729,7 @@ soup_message_class_init (SoupMessageClass *message_class)
 	 *
 	 * Since: webengine2014
 	 **/
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	signals[ACCEPT_CERTIFICATE] =
 		g_signal_new ("accept_certificate",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -1243,7 +1243,7 @@ soup_message_network_event (SoupMessage         *msg,
 		       event, connection);
 }
 
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 const char*
 soup_message_dynamic_client_certificate (SoupMessage         *msg,
 					 const char* current_host)
@@ -1256,7 +1256,7 @@ soup_message_dynamic_client_certificate (SoupMessage         *msg,
 }
 #endif
 
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 gboolean
 soup_message_accept_certificate (SoupMessage         *msg,
 				 GTlsCertificate* certificate,

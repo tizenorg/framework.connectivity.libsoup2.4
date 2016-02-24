@@ -85,7 +85,7 @@ GType soup_session_get_type (void);
 /*#if ENABLE(TIZEN_CERTIFICATE_FILE_SET)*/
 #define SOUP_SESSION_CERTIFICATE_PATH        "certificate-path"
 /*#endif*/
-//#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+//#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 #define SOUP_SESSION_WIDGET_ENGINE          "widget-engine"
 //#endif
 
@@ -199,7 +199,7 @@ SoupRequestHTTP *soup_session_request_http_uri (SoupSession  *session,
 						const char   *method,
 						SoupURI      *uri,
 						GError      **error);
-//#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+//#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 gboolean
 re_emit_connection_accept_certificate          (SoupConnection      *conn,
 						GTlsCertificate     *certificate,
@@ -218,13 +218,13 @@ typedef enum {
 	SOUP_REQUEST_ERROR_ENCODING
 } SoupRequestError;
 
-//#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+//#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 const char*
 re_emit_connection_dynamic_client_certificate (SoupConnection      *conn,
 					       const char* current_host,
 					       gpointer user_data);
 //#endif
-//#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+//#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 void
 soup_session_create_idle_connection(SoupSession *session, SoupURI *uri);
 //#endif

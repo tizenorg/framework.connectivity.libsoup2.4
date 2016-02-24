@@ -56,7 +56,7 @@ char               *soup_content_sniffer_sniff           (SoupContentSniffer  *s
 							  GHashTable         **params);
 SOUP_AVAILABLE_IN_2_28
 gsize               soup_content_sniffer_get_buffer_size (SoupContentSniffer  *sniffer);
-//#if ENABLE(TIZEN_TV_DISABLE_MIME_SNIFF)
+//#if ENABLE(TIZEN_VD_DISABLE_MIME_SNIFF)
 void                soup_content_mime_sniff_set (gboolean gDisableMimeSniff);
 //#endif
 

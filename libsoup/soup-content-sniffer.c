@@ -485,7 +485,7 @@ static char byte_looks_binary[] = {
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  /* 0xF0 - 0xFF */
 };
 
-#if ENABLE(TIZEN_TV_DISABLE_MIME_SNIFF)
+#if ENABLE(TIZEN_VD_DISABLE_MIME_SNIFF)
 gboolean soup_Disable_Mime_Sniff = FALSE;
 void
 soup_content_mime_sniff_set (gboolean gDisableMimeSniff)
@@ -504,7 +504,7 @@ sniff_unknown (SoupContentSniffer *sniffer, SoupBuffer *buffer,
 	int resource_length = MIN (512, buffer->length);
 	int i;
 
-#if ENABLE(TIZEN_TV_DISABLE_MIME_SNIFF)
+#if ENABLE(TIZEN_VD_DISABLE_MIME_SNIFF)
 	if (soup_Disable_Mime_Sniff && !sniff_scriptable){
 		return g_strdup ("text/plain");
 	}
@@ -585,7 +585,7 @@ sniff_unknown (SoupContentSniffer *sniffer, SoupBuffer *buffer,
 			return g_strdup ("application/octet-stream");
 	}
 
-#if ENABLE(TIZEN_TV_DISABLE_MIME_SNIFF)
+#if ENABLE(TIZEN_VD_DISABLE_MIME_SNIFF)
 	/* Refer to Orsay's implementation, modify the default value from "text/plain" to "text/html". */
 	return g_strdup ("text/html");
 #else

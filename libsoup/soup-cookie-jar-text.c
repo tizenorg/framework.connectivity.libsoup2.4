@@ -136,7 +136,7 @@ parse_cookie (char *line, time_t now)
 	if (g_str_has_prefix (line, "#HttpOnly_")) {
 		http_only = TRUE;
 		line += strlen ("#HttpOnly_");
-#if ENABLE(TIZEN_TV_FIX_TEXT_STORAGE_MODE_OF_COOKIE)
+#if ENABLE(TIZEN_VD_FIX_TEXT_STORAGE_MODE_OF_COOKIE)
 	/* For file:// protocol, When use document.cookie to get/set cookie.
 	* host(first field of cookie string) will be empty.'\t' has been
 	* used as a separator to split each field. Because host is empty,

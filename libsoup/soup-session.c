@@ -167,7 +167,7 @@ typedef struct {
 	GSource *tls_idle_timeout_src;
 	char *certificate_path;
 #endif
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	gboolean widget_engine;
 #endif
 	GHashTable *request_types;
@@ -242,14 +242,14 @@ enum {
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
 	PROP_CERTIFICATE_PATH,
 #endif
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	PROP_WIDGET_ENGINE,
 #endif
 
 	LAST_PROP
 };
 
-#if ENABLE(TIZEN_TV_FORCE_PRELOAD_TLSDB)
+#if ENABLE(TIZEN_VD_FORCE_PRELOAD_TLSDB)
 // Preload TLS database. Allow to load the TLS database in background.
 static GTlsDatabase *_gTlsDB = NULL;
 static gchar *_gTlsDB_path = NULL;
@@ -793,7 +793,7 @@ soup_session_set_property (GObject *object, guint prop_id,
 		TIZEN_LOGI ("set_property() PROP_CERTIFICATE_PATH priv->certificate_path is set [%s]", priv->certificate_path);
 #endif
 		if (priv->certificate_path)
-#if ENABLE(TIZEN_TV_FORCE_PRELOAD_TLSDB)
+#if ENABLE(TIZEN_VD_FORCE_PRELOAD_TLSDB)
 			//Trigger loading of the TLS database. The load is done in a thread.
 			soup_preload_tls_database(priv->certificate_path);
 #else
@@ -801,7 +801,7 @@ soup_session_set_property (GObject *object, guint prop_id,
 #endif
 		break;
 #endif
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	case PROP_WIDGET_ENGINE:
 		priv->widget_engine = g_value_get_boolean (value);
 		break;
@@ -917,7 +917,7 @@ soup_session_get_property (GObject *object, guint prop_id,
 		g_value_set_string (value, priv->certificate_path);
 		break;
 #endif
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	case PROP_WIDGET_ENGINE:
 		g_value_set_boolean (value, priv->widget_engine);
 		break;
@@ -1295,7 +1295,7 @@ re_emit_connection_event (SoupConnection      *conn,
 	soup_message_network_event (item->msg, event, connection);
 }
 
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 const char*
 re_emit_connection_dynamic_client_certificate (SoupConnection      *conn,
                                                const char* current_host,
@@ -1307,7 +1307,7 @@ re_emit_connection_dynamic_client_certificate (SoupConnection      *conn,
 }
 #endif
 
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 gboolean
 re_emit_connection_accept_certificate (SoupConnection      *conn,
 					GTlsCertificate* certificate,
@@ -1337,12 +1337,12 @@ soup_session_set_item_connection (SoupSession          *session,
 		g_object_ref (item->conn);
 		g_signal_connect (item->conn, "event",
 				  G_CALLBACK (re_emit_connection_event), item);
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 		if (item->msg->method != SOUP_METHOD_CONNECT)
 			g_signal_connect (item->conn, "dynamic-certificatePath",
 					  G_CALLBACK (re_emit_connection_dynamic_client_certificate), item);
 #endif
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 		if (item->msg->method != SOUP_METHOD_CONNECT)
 			g_signal_connect (item->conn, "accept-certificate",
 					  G_CALLBACK (re_emit_connection_accept_certificate), item);
@@ -1907,13 +1907,13 @@ get_connection_for_host (SoupSession *session,
 		conn = conns->data;
 
 		if (!need_new_connection && soup_connection_get_state (conn) == SOUP_CONNECTION_IDLE) {
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 			soup_connection_set_current_item (conns->data, item);
 #endif
 			soup_connection_set_state (conn, SOUP_CONNECTION_IN_USE);
 			return conn;
 		} else if (soup_connection_get_state (conn) == SOUP_CONNECTION_CONNECTING)
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 		{
 			if (!soup_connection_has_current_item (conns->data)) {
 				soup_connection_set_current_item (conns->data, item);
@@ -1923,7 +1923,7 @@ get_connection_for_host (SoupSession *session,
 			} else {
 #endif
 			num_pending++;
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 			}
 		}
 #endif
@@ -1959,7 +1959,7 @@ get_connection_for_host (SoupSession *session,
 		SOUP_CONNECTION_PROXY_RESOLVER, proxy_resolver,
 		SOUP_CONNECTION_SSL, soup_uri_is_https (soup_message_get_uri (item->msg), priv->https_aliases),
 		SOUP_CONNECTION_SSL_CREDENTIALS, tlsdb,
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 		SOUP_CONNECTION_WIDGET_ENGINE, priv->widget_engine,
 #endif
 		SOUP_CONNECTION_SSL_STRICT, priv->ssl_strict && (tlsdb != NULL || SOUP_IS_PLAIN_SESSION (session)),
@@ -1995,7 +1995,7 @@ get_connection_for_host (SoupSession *session,
 		host->keep_alive_src = NULL;
 	}
 
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 	soup_connection_set_current_item (conn, item);
 #endif
 	return conn;
@@ -2048,7 +2048,7 @@ get_connection (SoupMessageQueueItem *item, gboolean *should_cleanup)
 
 	soup_session_set_item_connection (session, item, conn);
 
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 	if (soup_connection_get_state (item->conn) == SOUP_CONNECTION_CONNECTING) {
 		item->state = SOUP_MESSAGE_CONNECTING;
 		soup_message_queue_item_ref (item);
@@ -3095,7 +3095,7 @@ soup_session_get_feature_for_message (SoupSession *session, GType feature_type,
 
 #if ENABLE(TIZEN_CERTIFICATE_FILE_SET)
 
-#if ENABLE(TIZEN_TV_FORCE_PRELOAD_TLSDB)
+#if ENABLE(TIZEN_VD_FORCE_PRELOAD_TLSDB)
 /**
  * TLS database preloader thread.
  **/
@@ -3148,7 +3148,7 @@ void soup_session_set_certificate_file(SoupSession *session)
 		GError* error = NULL;
 		GTlsDatabase* tlsdb = NULL;
 
-#if ENABLE(TIZEN_TV_FORCE_PRELOAD_TLSDB)
+#if ENABLE(TIZEN_VD_FORCE_PRELOAD_TLSDB)
 		TIZEN_LOGI("Begin to handle TLS database.");
 		g_mutex_lock (&_gTlsDB_lock);
 		//Check whether certificate_path is the same as the path used by pre-load TLS DB.
@@ -4025,7 +4025,7 @@ soup_session_class_init (SoupSessionClass *session_class)
 				     G_PARAM_READWRITE));
 #endif
 
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	/**
 	* SOUP_SESSION_USE_WIDGETENGINE:
 	*
@@ -4481,7 +4481,7 @@ soup_session_send_async (SoupSession         *session,
 {
 	SoupMessageQueueItem *item;
 	gboolean use_thread_context;
-#if ENABLE(TIZEN_TV_IMMEDIATE_REQUESTING)
+#if ENABLE(TIZEN_VD_IMMEDIATE_REQUESTING)
 	gboolean should_prune = FALSE;
 #endif
 
@@ -4520,7 +4520,7 @@ soup_session_send_async (SoupSession         *session,
 	if (async_respond_from_cache (session, item))
 		item->state = SOUP_MESSAGE_CACHED;
 	else
-#if ENABLE(TIZEN_TV_IMMEDIATE_REQUESTING)
+#if ENABLE(TIZEN_VD_IMMEDIATE_REQUESTING)
 	{
 		/* CONNECT messages are handled specially */
 		if (item->msg->method != SOUP_METHOD_CONNECT) {
@@ -4528,7 +4528,7 @@ soup_session_send_async (SoupSession         *session,
 		}
 #endif
 		soup_session_kick_queue (session);
-#if ENABLE(TIZEN_TV_IMMEDIATE_REQUESTING)
+#if ENABLE(TIZEN_VD_IMMEDIATE_REQUESTING)
 	}
 #endif
 }
@@ -4965,7 +4965,7 @@ soup_session_is_tls_db_initialized (SoupSession *session)
 }
 #endif
 
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 
 static SoupConnection *
 get_pre_connection_with_uri (SoupSession *session, SoupURI *uri)

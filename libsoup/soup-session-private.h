@@ -50,7 +50,7 @@ void 			soup_session_tls_start_idle_timer (SoupSession *session, guint idle_time
 void 			soup_session_tls_stop_idle_timer (SoupSession *session);
 gboolean		soup_session_is_tls_db_initialized (SoupSession* session);
 #endif
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 guint                 soup_session_get_idle_connection_for_host      (SoupSession  *session,
 		                                                 SoupURI      *uri);
 #endif

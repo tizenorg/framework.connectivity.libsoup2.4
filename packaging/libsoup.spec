@@ -2,7 +2,7 @@
 %bcond_with introspection
 
 Name:           libsoup
-Version:        2.46.0_22
+Version:        2.46.0_21
 Release:        0
 License:        LGPL-2.0+
 Summary:        HTTP client/server library for GNOME
@@ -101,8 +101,8 @@ chmod +x autogen.sh
     --enable-tizen-add-x-soup-message-headers \
     --enable-tizen-dynamic-certificate-loading \
     --enable-tizen-certificate-handling \
-    --enable-tizen-tv-checking-deleted-entry-file \
-    --enable-tizen-tv-force-preload-tlsdb \
+    --enable-tizen-vd-checking-deleted-entry-file \
+    --enable-tizen-vd-force-preload-tlsdb \
     --enable-tizen-performance-test-log \
 %endif
     --disable-static

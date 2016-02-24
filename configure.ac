@@ -234,11 +234,11 @@ AC_ARG_ENABLE(tizen-client-certificate,
 
 AC_MSG_CHECKING([for Tizen client certificate])
 if test $enable_tizen_client_certificate != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_CLIENT_CERTIFICATE, 1, [Add new feature, which implement HTTPS connection with client certificate feature])
+        AC_DEFINE(ENABLE_TIZEN_VD_CLIENT_CERTIFICATE, 1, [Add new feature, which implement HTTPS connection with client certificate feature])
 fi
 AC_MSG_RESULT($enable_tizen_client_certificate)
 
-AM_CONDITIONAL(TIZEN_TV_CLIENT_CERTIFICATE, [test $enable_tizen_client_certificate = yes])
+AM_CONDITIONAL(TIZEN_VD_CLIENT_CERTIFICATE, [test $enable_tizen_client_certificate = yes])
 
 dnl *************************
 dnl *** Tizen certificate handling  ***
@@ -250,11 +250,11 @@ AC_ARG_ENABLE(tizen-certificate-handling,
 
 AC_MSG_CHECKING([for Tizen certificate handling])
 if test $enable_tizen_certificate_handling != no;then
-	AC_DEFINE(ENABLE_TIZEN_TV_CERTIFICATE_HANDLING, 1, [Add new feature, which support for certificate handling( signal: ACCEPT_CERTIFICATE )])
+	AC_DEFINE(ENABLE_TIZEN_VD_CERTIFICATE_HANDLING, 1, [Add new feature, which support for certificate handling( signal: ACCEPT_CERTIFICATE )])
 fi
 AC_MSG_RESULT($enable_tizen_certificate_handling)
 
-AM_CONDITIONAL(TIZEN_TV_CERTIFICATE_HANDLING, [test $enable_tizen_certificate_handling = yes])
+AM_CONDITIONAL(TIZEN_VD_CERTIFICATE_HANDLING, [test $enable_tizen_certificate_handling = yes])
 
 dnl ********************************************
 dnl *** Tizen support text storage of cookie ***
@@ -267,11 +267,11 @@ AC_ARG_ENABLE(tizen-text-storage-mode-of-cookie,
 
 AC_MSG_CHECKING([for Tizen support text storage of cookie])
 if test $enable_tizen_text_storage_mode_of_cookie != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_FIX_TEXT_STORAGE_MODE_OF_COOKIE, 1, [Fix document.cookie get/set cookie not working issue, in case of file:// protocol.])
+        AC_DEFINE(ENABLE_TIZEN_VD_FIX_TEXT_STORAGE_MODE_OF_COOKIE, 1, [Fix document.cookie get/set cookie not working issue, in case of file:// protocol.])
 fi
 AC_MSG_RESULT($enable_tizen_text_storage_mode_of_cookie)
 
-AM_CONDITIONAL(ENABLE_TIZEN_TV_FIX_TEXT_STORAGE_MODE_OF_COOKIE, [test $enable_tizen_text_storage_mode_of_cookie = yes])
+AM_CONDITIONAL(ENABLE_TIZEN_VD_FIX_TEXT_STORAGE_MODE_OF_COOKIE, [test $enable_tizen_text_storage_mode_of_cookie = yes])
 
 dnl *******************************************************
 dnl *** Tizen support soup cache clean leaked resources ***
@@ -283,11 +283,11 @@ AC_ARG_ENABLE(tizen-soup-cache-clean-leaked-resources,
 
 AC_MSG_CHECKING([for Tizen soup cache clean leaked resources])
 if test $enable_tizen_soup_cache_clean_leaked_resources != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES, 1, [Add new feature, which supports soup cache clean leaked resources])
+        AC_DEFINE(ENABLE_TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES, 1, [Add new feature, which supports soup cache clean leaked resources])
 fi
 AC_MSG_RESULT($enable_tizen_soup_cache_clean_leaked_resources)
 
-AM_CONDITIONAL(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES, [test $enable_tizen_soup_cache_clean_leaked_resources = yes])
+AM_CONDITIONAL(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES, [test $enable_tizen_soup_cache_clean_leaked_resources = yes])
 
 dnl *************************
 dnl *** Tizen use expanded response block ***
@@ -315,11 +315,11 @@ AC_ARG_ENABLE(tizen-create-idle-tcp-connection,
 
 AC_MSG_CHECKING([for Tizen create idle tcp connection])
 if test $enable_tizen_create_idle_tcp_connection != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_CREATE_IDLE_TCP_CONNECTION, 1, [Add new feature, which supports Create Idle tcp connections for pre-connection])
+        AC_DEFINE(ENABLE_TIZEN_VD_CREATE_IDLE_TCP_CONNECTION, 1, [Add new feature, which supports Create Idle tcp connections for pre-connection])
 fi
 AC_MSG_RESULT($enable_tizen_create_idle_tcp_connection)
 
-AM_CONDITIONAL(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION, [test $enable_tizen_create_idle_tcp_connection = yes])
+AM_CONDITIONAL(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION, [test $enable_tizen_create_idle_tcp_connection = yes])
 
 dnl *************************
 dnl *** Tizen disable mime  sniff  ***
@@ -331,11 +331,11 @@ AC_ARG_ENABLE(tizen-disable-mime-sniff,
 
 AC_MSG_CHECKING([for Tizen disable mime  sniff])
 if test $enable_tizen_disable_mime_sniff != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_DISABLE_MIME_SNIFF, 1, [Provide an interface for Webkit to disable MIME sniff when content-type is unknown.])
+        AC_DEFINE(ENABLE_TIZEN_VD_DISABLE_MIME_SNIFF, 1, [Provide an interface for Webkit to disable MIME sniff when content-type is unknown.])
 fi
 AC_MSG_RESULT($enable_tizen_disable_mime_sniff)
 
-AM_CONDITIONAL(TIZEN_TV_DISABLE_MIME_SNIFF, [test $enable_tizen_disable_mime_sniff = yes])
+AM_CONDITIONAL(TIZEN_VD_DISABLE_MIME_SNIFF, [test $enable_tizen_disable_mime_sniff = yes])
 
 dnl ***********************************************
 dnl *** Tizen support soup immediate requesting ***
@@ -347,11 +347,11 @@ AC_ARG_ENABLE(tizen-immediate-requesting,
 
 AC_MSG_CHECKING([for Tizen soup immediate requesting])
 if test $enable_tizen_immediate_requesting != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_IMMEDIATE_REQUESTING, 1, [Add new feature, which supports soup immediate requesting])
+        AC_DEFINE(ENABLE_TIZEN_VD_IMMEDIATE_REQUESTING, 1, [Add new feature, which supports soup immediate requesting])
 fi
 AC_MSG_RESULT($enable_tizen_immediate_requesting)
 
-AM_CONDITIONAL(TIZEN_TV_IMMEDIATE_REQUESTING, [test $enable_tizen_immediate_requesting = yes])
+AM_CONDITIONAL(TIZEN_VD_IMMEDIATE_REQUESTING, [test $enable_tizen_immediate_requesting = yes])
 
 dnl ***********************************************
 dnl *** Tizen support computing disk cache size ***
@@ -363,26 +363,26 @@ AC_ARG_ENABLE(tizen-computing-disk-cache-size,
 
 AC_MSG_CHECKING([for Tizen computing disk cache size])
 if test $enable_tizen_computing_disk_cache_size != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_COMPUTING_DISK_CACHE_SIZE, 1, [Add new feature, which supports entry length as disk cache size])
+        AC_DEFINE(ENABLE_TIZEN_VD_COMPUTING_DISK_CACHE_SIZE, 1, [Add new feature, which supports entry length as disk cache size])
 fi
 AC_MSG_RESULT($enable_tizen_computing_disk_cache_size)
 
-AM_CONDITIONAL(TIZEN_TV_COMPUTING_DISK_CACHE_SIZE, [test $enable_tizen_computing_disk_cache_size = yes])
+AM_CONDITIONAL(TIZEN_VD_COMPUTING_DISK_CACHE_SIZE, [test $enable_tizen_computing_disk_cache_size = yes])
 
 dnl ***********************************************
 dnl *** Tizen support force preload tlsdb***
 dnl ***********************************************
-AC_ARG_ENABLE(tizen-tv-force-preload-tlsdb,
-        AS_HELP_STRING([--enable-tizen-tv-force-preload-tlsdb], [Enable Tizen force preload tlsdb ]),        ,
-        enable_tizen_tv_force_preload_tlsdb=no)
+AC_ARG_ENABLE(tizen-vd-force-preload-tlsdb,
+        AS_HELP_STRING([--enable-tizen-vd-force-preload-tlsdb], [Enable Tizen force preload tlsdb ]),        ,
+        enable_tizen_vd_force_preload_tlsdb=no)
 
 AC_MSG_CHECKING([for Tizen force preload tlsdb])
-if test $enable_tizen_tv_force_preload_tlsdb != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_FORCE_PRELOAD_TLSDB, 1, [Add new feature, which supports to pre load TLS database])
+if test $enable_tizen_vd_force_preload_tlsdb != no;then
+        AC_DEFINE(ENABLE_TIZEN_VD_FORCE_PRELOAD_TLSDB, 1, [Add new feature, which supports to pre load TLS database])
 fi
-AC_MSG_RESULT($enable_tizen_tv_force_preload_tlsdb)
+AC_MSG_RESULT($enable_tizen_vd_force_preload_tlsdb)
 
-AM_CONDITIONAL(TIZEN_TV_FORCE_PRELOAD_TLSDB, [test $enable_tizen_tv_force_preload_tlsdb = yes])
+AM_CONDITIONAL(TIZEN_VD_FORCE_PRELOAD_TLSDB, [test $enable_tizen_vd_force_preload_tlsdb = yes])
 
 dnl ****************************************
 dnl *** Tizen add x soup message headers ***
@@ -395,11 +395,11 @@ AC_ARG_ENABLE(tizen-add-x-soup-message-headers,
 
 AC_MSG_CHECKING([for Tizen support text storage of cookie])
 if test $enable_tizen_add_x_soup_message_headers != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_ADD_X_SOUP_MESSAGE_HEADERS, 1, [Add X-From-Cache and X-Entry-Length header.])
+        AC_DEFINE(ENABLE_TIZEN_VD_ADD_X_SOUP_MESSAGE_HEADERS, 1, [Add X-From-Cache and X-Entry-Length header.])
 fi
 AC_MSG_RESULT($enable_tizen_add_x_soup_message_headers)
 
-AM_CONDITIONAL(ENABLE_TIZEN_TV_ADD_X_SOUP_MESSAGE_HEADERS, [test $enable_tizen_add_x_soup_message_headers = yes])
+AM_CONDITIONAL(ENABLE_TIZEN_VD_ADD_X_SOUP_MESSAGE_HEADERS, [test $enable_tizen_add_x_soup_message_headers = yes])
 
 dnl ******************************************
 dnl *** Tizen dynamic certificate loading  ***
@@ -411,27 +411,27 @@ AC_ARG_ENABLE(tizen-dynamic-certificate-loading,
 
 AC_MSG_CHECKING([for Tizen dynamic certificate loading])
 if test $enable_tizen_dynamic_certificate_loading != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING, 1, [Add new feature, which implement support dynamic SSL Certificate Loading])
+        AC_DEFINE(ENABLE_TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING, 1, [Add new feature, which implement support dynamic SSL Certificate Loading])
 fi
 AC_MSG_RESULT($enable_tizen_dynamic_certificate_loading)
 
-AM_CONDITIONAL(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING, [test $enable_tizen_dynamic_certificate_loading = yes])
+AM_CONDITIONAL(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING, [test $enable_tizen_dynamic_certificate_loading = yes])
 
 dnl ***************************************************
 dnl *** Tizen checking deleted entry files support  ***
 dnl ***************************************************
 
-AC_ARG_ENABLE(tizen-tv-checking-deleted-entry-file,
-	AS_HELP_STRING([--enable-tizen-tv-checking-deleted-entry-file], [Enable Tizen checking deleted entry files support ]),        ,
-	enable_tizen_tv_checking_deleted_entry_file=no)
+AC_ARG_ENABLE(tizen-vd-checking-deleted-entry-file,
+	AS_HELP_STRING([--enable-tizen-vd-checking-deleted-entry-file], [Enable Tizen checking deleted entry files support ]),        ,
+	enable_tizen_vd_checking_deleted_entry_file=no)
 
 AC_MSG_CHECKING([for Tizen checking deleted entry files])
-if test $enable_tizen_tv_checking_deleted_entry_file != no;then
-        AC_DEFINE(ENABLE_TIZEN_TV_CHECKING_DELETED_ENTRY_FILE, 1, [Checking deleted entry files before soup_cache_load()])
+if test $enable_tizen_vd_checking_deleted_entry_file != no;then
+        AC_DEFINE(ENABLE_TIZEN_VD_CHECKING_DELETED_ENTRY_FILE, 1, [Checking deleted entry files before soup_cache_load()])
 fi
-AC_MSG_RESULT($enable_tizen_tv_checking_deleted_entry_file)
+AC_MSG_RESULT($enable_tizen_vd_checking_deleted_entry_file)
 
-AM_CONDITIONAL(TIZEN_TV_CHECKING_DELETED_ENTRY_FILE, [test $enable_tizen_tv_checking_deleted_entry_file = yes])
+AM_CONDITIONAL(TIZEN_VD_CHECKING_DELETED_ENTRY_FILE, [test $enable_tizen_vd_checking_deleted_entry_file = yes])
 
 dnl *******************************
 dnl *** Tizen performance test  ***

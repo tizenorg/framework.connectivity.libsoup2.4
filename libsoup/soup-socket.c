@@ -65,10 +65,10 @@ enum {
 	DISCONNECTED,
 	NEW_CONNECTION,
 	EVENT,
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
         DYNAMIC_CERTIFICATEPATH,
 #endif
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	ACCEPT_CERTIFICATE,
 #endif
 
@@ -95,7 +95,7 @@ enum {
 	PROP_TLS_CERTIFICATE,
 	PROP_TLS_ERRORS,
 	PROP_PROXY_RESOLVER,
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	PROP_WIDGET_ENGINE,
 #endif
 
@@ -128,16 +128,16 @@ typedef struct {
 	guint timeout;
 
 	GCancellable *connect_cancel;
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	gboolean widget_engine;
 	gchar **cert_lists;
 #endif
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	gboolean acceptedCertificate;
 #endif
 } SoupSocketPrivate;
 
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 #define CERT_LIST_FILE "/usr/share/clientcert/ClientCertList"
 #endif
 
@@ -153,10 +153,10 @@ soup_socket_init (SoupSocket *sock)
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
 	priv->non_blocking = TRUE;
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	priv->cert_lists = NULL;
 #endif
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	priv->acceptedCertificate = FALSE;
 #endif
 	g_mutex_init (&priv->addrlock);
@@ -187,7 +187,7 @@ soup_socket_finalize (GObject *object)
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (object);
 
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	if (priv->cert_lists)
 		g_strfreev (priv->cert_lists);
 #endif
@@ -290,7 +290,7 @@ soup_socket_set_property (GObject *object, guint prop_id,
 	case PROP_CLEAN_DISPOSE:
 		priv->clean_dispose = g_value_get_boolean (value);
 		break;
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	case PROP_WIDGET_ENGINE:
 		priv->widget_engine = g_value_get_boolean (value);
 		break;
@@ -353,7 +353,7 @@ soup_socket_get_property (GObject *object, guint prop_id,
 	case PROP_PROXY_RESOLVER:
 		g_value_set_object (value, priv->proxy_resolver);
 		break;
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	case PROP_WIDGET_ENGINE:
 		g_value_set_boolean (value, priv->widget_engine);
 		break;
@@ -469,7 +469,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 			      G_TYPE_SOCKET_CLIENT_EVENT,
 			      G_TYPE_IO_STREAM);
 
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 	signals[DYNAMIC_CERTIFICATEPATH] =
 		g_signal_new ("dynamic-certificatePath",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -480,7 +480,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 			      G_TYPE_POINTER, 1,
 			      G_TYPE_POINTER);
 #endif
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	signals[ACCEPT_CERTIFICATE] =
 		g_signal_new ("accept-certificate",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -723,7 +723,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 				     G_TYPE_PROXY_RESOLVER,
 				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 	/**
 	 * SOUP_SOCKET_WIDGET_ENGINE:
 	 *
@@ -739,7 +739,7 @@ soup_socket_class_init (SoupSocketClass *socket_class)
 #endif
 }
 
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 static GTlsCertificate *
 soup_get_client_certificate(SoupSocket *sock, const char* ssl_host)
 {
@@ -807,7 +807,7 @@ soup_get_client_certificate(SoupSocket *sock, const char* ssl_host)
 }
 #endif
 
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 static GTlsCertificate *soup_get_dynamic_client_certificate(SoupSocket *sock, const char* ssl_host)
 {
 	SoupSocket *soupSock = sock;
@@ -1297,7 +1297,7 @@ soup_socket_peer_certificate_changed (GObject *conn, GParamSpec *pspec,
 {
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (sock);
 
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	if (!priv->acceptedCertificate)
 		priv->tls_errors = g_tls_connection_get_peer_certificate_errors (G_TLS_CONNECTION (priv->conn));
 #else
@@ -1312,7 +1312,7 @@ static gboolean
 soup_socket_accept_certificate (GTlsConnection *conn, GTlsCertificate *cert,
 				GTlsCertificateFlags errors, gpointer sock)
 {
-#if ENABLE(TIZEN_TV_CERTIFICATE_HANDLING)
+#if ENABLE(TIZEN_VD_CERTIFICATE_HANDLING)
 	gboolean accept = FALSE;
 	SoupSocket *soupSock = sock;
 	SoupSocketPrivate *priv = SOUP_SOCKET_GET_PRIVATE (soupSock);
@@ -1353,16 +1353,16 @@ soup_socket_setup_ssl (SoupSocket    *sock,
 	if (!priv->is_server) {
 		GTlsClientConnection *conn;
 		GSocketConnectable *identity;
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 		GTlsCertificate *cert;
 #endif
 
 		identity = g_network_address_new (ssl_host, 0);
 
-#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 		if (priv->widget_engine) {
 			cert = soup_get_client_certificate (sock, ssl_host);
-#if ENABLE(TIZEN_TV_DYNAMIC_CERTIFICATE_LOADING)
+#if ENABLE(TIZEN_VD_DYNAMIC_CERTIFICATE_LOADING)
 			if(!cert)
 				cert = soup_get_dynamic_client_certificate(sock, ssl_host);
 #endif

@@ -53,7 +53,7 @@ typedef struct {
 #define SOUP_SOCKET_TLS_CERTIFICATE     "tls-certificate"
 #define SOUP_SOCKET_TLS_ERRORS          "tls-errors"
 
-//#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+//#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 #define SOUP_SOCKET_WIDGET_ENGINE       "widget-engine"
 //#endif
 

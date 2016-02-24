@@ -50,7 +50,7 @@ GType soup_connection_get_type (void);
 #define SOUP_CONNECTION_IDLE_TIMEOUT    "idle-timeout"
 #define SOUP_CONNECTION_STATE           "state"
 #define SOUP_CONNECTION_MESSAGE         "message"
-//#if ENABLE(TIZEN_TV_CLIENT_CERTIFICATE)
+//#if ENABLE(TIZEN_VD_CLIENT_CERTIFICATE)
 #define SOUP_CONNECTION_WIDGET_ENGINE   "widget-engine"
 //#endif
 
@@ -96,7 +96,7 @@ void            soup_connection_send_request   (SoupConnection          *conn,
 
 gboolean        soup_connection_get_ssl_fallback (SoupConnection   *conn);
 
-#if ENABLE(TIZEN_TV_CREATE_IDLE_TCP_CONNECTION)
+#if ENABLE(TIZEN_VD_CREATE_IDLE_TCP_CONNECTION)
 gboolean              soup_connection_has_current_item (SoupConnection *conn);
 SoupMessageQueueItem *soup_connection_get_current_item (SoupConnection *conn);
 void                  soup_connection_set_current_item (SoupConnection *conn, SoupMessageQueueItem *item);

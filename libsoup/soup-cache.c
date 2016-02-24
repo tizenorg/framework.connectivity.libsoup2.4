@@ -41,7 +41,7 @@
 #include "soup-message-private.h"
 #include "TIZEN.h"
 
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 #include <glib/gstdio.h>
 #endif
 
@@ -668,13 +668,13 @@ soup_cache_entry_insert (SoupCache *cache,
 	SoupCacheEntry *old_entry;
 
 	/* Fill the key */
-#if ENABLE(TIZEN_TV_CHECKING_DELETED_ENTRY_FILE)
+#if ENABLE(TIZEN_VD_CHECKING_DELETED_ENTRY_FILE)
 	if (!entry->key)
 #endif
 	entry->key = get_cache_key_from_uri ((const char *) entry->uri);
 
 	if (soup_message_headers_get_encoding (entry->headers) == SOUP_ENCODING_CONTENT_LENGTH)
-#if ENABLE(TIZEN_TV_COMPUTING_DISK_CACHE_SIZE)
+#if ENABLE(TIZEN_VD_COMPUTING_DISK_CACHE_SIZE)
 	{
 		if (entry->length) {
 			length_to_add = entry->length;
@@ -746,7 +746,7 @@ soup_cache_send_response (SoupCache *cache, SoupMessage *msg)
 	char *current_age;
 	GInputStream *file_stream, *body_stream, *cache_stream;
 	GFile *file;
-#if ENABLE(TIZEN_TV_ADD_X_SOUP_MESSAGE_HEADERS)
+#if ENABLE(TIZEN_VD_ADD_X_SOUP_MESSAGE_HEADERS)
 	char *entry_length;
 #endif
 
@@ -787,7 +787,7 @@ soup_cache_send_response (SoupCache *cache, SoupMessage *msg)
 				      current_age);
 	g_free (current_age);
 
-#if ENABLE(TIZEN_TV_ADD_X_SOUP_MESSAGE_HEADERS)
+#if ENABLE(TIZEN_VD_ADD_X_SOUP_MESSAGE_HEADERS)
 	/* Add 'X-From-Cache' header */
 	soup_message_headers_append(msg->response_headers, "X-From-Cache", "true");
 
@@ -1403,7 +1403,7 @@ soup_cache_flush (SoupCache *cache)
 		g_warning ("Cache flush finished despite %d pending requests", cache->priv->n_pending);
 }
 
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 typedef void (* SoupCacheForeachFileFunc) (SoupCache *cache, const char *name, gpointer user_data);
 
 static void
@@ -1444,7 +1444,7 @@ clear_cache_item (gpointer data,
 static void
 clear_cache_files (SoupCache *cache)
 {
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 	soup_cache_foreach_file (cache, delete_cache_file, NULL);
 #else
 	GFileInfo *file_info;
@@ -1679,7 +1679,7 @@ soup_cache_dump (SoupCache *cache)
 	g_variant_unref (cache_variant);
 }
 
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 static inline guint32
 get_key_from_cache_filename (const char *name)
 {
@@ -1728,12 +1728,12 @@ soup_cache_load (SoupCache *cache)
 	SoupCacheEntry *entry;
 	SoupCachePrivate *priv = cache->priv;
 	guint16 version, status_code;
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 	GHashTable *leaked_entries = NULL;
 	GHashTableIter iter;
 	gpointer value;
 #endif
-#if ENABLE(TIZEN_TV_CHECKING_DELETED_ENTRY_FILE)
+#if ENABLE(TIZEN_VD_CHECKING_DELETED_ENTRY_FILE)
 	GFile *file = NULL;
 #endif
 #if ENABLE(TIZEN_USER_AGENT_CHECK_IN_CACHE)
@@ -1758,7 +1758,7 @@ soup_cache_load (SoupCache *cache)
 		return;
 	}
 
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 	leaked_entries = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, g_free);
 	soup_cache_foreach_file (cache, (SoupCacheForeachFileFunc)insert_cache_file, leaked_entries);
 #endif
@@ -1802,7 +1802,7 @@ soup_cache_load (SoupCache *cache)
 		entry->length = length;
 		entry->headers = headers;
 		entry->status_code = status_code;
-#if ENABLE(TIZEN_TV_CHECKING_DELETED_ENTRY_FILE)
+#if ENABLE(TIZEN_VD_CHECKING_DELETED_ENTRY_FILE)
 		entry->key = get_cache_key_from_uri ((const char *) entry->uri);
 
 		file = get_file_from_entry (cache, entry);
@@ -1817,14 +1817,14 @@ soup_cache_load (SoupCache *cache)
 
 		if (!soup_cache_entry_insert (cache, entry, FALSE))
 			soup_cache_entry_free (entry);
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 		else
 			g_hash_table_remove (leaked_entries, GUINT_TO_POINTER (entry->key));
 #endif
 	}
 
 	/* Remove the leaked files */
-#if ENABLE(TIZEN_TV_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
+#if ENABLE(TIZEN_VD_SOUP_CACHE_CLEAN_LEAKED_RESOURCES)
 	g_hash_table_iter_init (&iter, leaked_entries);
 	while (g_hash_table_iter_next (&iter, NULL, &value))
 		g_unlink ((char *)value);
